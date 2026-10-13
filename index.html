@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Temperature Test Analyzer</title>
+<style>
+  :root{
+    --bg:#0f172a; --card:#1e293b; --card-alt:#243447;
+    --accent:#38bdf8; --accent2:#22c55e; --accent3:#f59e0b;
+    --accent4:#a78bfa; --danger:#ef4444;
+    --text:#e2e8f0; --muted:#94a3b8; --border:#334155;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; padding:0;
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,"Segoe UI",Roboto,sans-serif;
+    min-height:100vh;
+  }
+  .container{
+    max-width:780px; margin:0 auto;
+    padding:20px 18px 40px;
+  }
+  header h1{
+    font-size:18px; font-weight:600;
+    margin:8px 0 2px;
+  }
+  header p{
+    font-size:12px; color:var(--muted);
+    margin:0 0 14px;
+  }
+  /* Dropzone */
+  .dropzone{
+    border:2px solid var(--accent);
+    background:var(--card);
+    border-radius:6px;
+    padding:14px;
+    text-align:center;
+    cursor:pointer;
+    font-size:13px;
+    color:var(--text);
+    transition:background .15s;
+  }
+  .dropzone:hover, .dropzone.dragover{
+    background:var(--card-alt);
+    border-color:var(--accent2);
+  }
+  input[type=file]{display:none;}
+  .file-info{
+    font-size:11px; color:var(--muted);
+    margin:8px 2px 12px;
+    word-break:break-all;
+  }
+  /* Cards */
+  .card{
+    background:var(--card);
+    border:1px solid var(--border);
+    border-left:3px solid var(--accent);
+    border-radius:5px;
+    padding:8px 12px;
+    margin-bottom:6px;
+  }
+  .card.alt{background:var(--card-alt);}
+  .card.ok{border-left-color:var(--accent2);}
+  .card.fail{border-left-color:var(--danger);}
+  .row1{
+    display:flex; align-items:center;
+    gap:6px; flex-wrap:wrap;
+  }
+  .name{
+    font-weight:600; font-size:13px;
+    width:72px; flex-shrink:0;
+  }
+  .lbl{font-size:11px; color:var(--muted);}
+  .time{
+    font-family:Consolas,"SF Mono",monospace;
+    font-weight:700; font-size:12px;
+    color:var(--accent);
+  }
+  .status{
+    margin-left:auto;
+    font-size:13px; font-weight:700;
+  }
+  .status.ok{color:var(--accent2);}
+  .status.fail{color:var(--danger);}
+  .row2{
+    display:flex; gap:16px; flex-wrap:wrap;
+    margin-top:3px; font-size:11px;
+  }
+  .dur{
+    font-family:Consolas,monospace;
+    font-weight:700; color:var(--accent2);
+    font-size:12px;
+  }
+  .rate{
+    font-family:Consolas,monospace;
+    font-weight:700; color:var(--accent4);
+    font-size:12px;
+  }
+  /* Runtime */
+  .runtime{
+    background:var(--card);
+    border:1px solid var(--border);
+    border-left:3px solid var(--accent3);
+    border-radius:5px;
+    padding:10px 12px;
+    margin-top:10px;
+  }
+  .runtime .title{
+    font-weight:600; font-size:13px;
+    margin-bottom:4px;
+  }
+  .runtime .val{
+    font-family:Consolas,monospace;
+    font-weight:700; font-size:13px;
+    color:var(--accent3);
+  }
+  /* Buttons */
+  .toolbar{
+    display:flex; gap:8px; margin-top:12px;
+    flex-wrap:wrap;
+  }
+  button{
+    font-family:inherit; font-size:12px; font-weight:600;
+    padding:8px 14px; border:none; border-radius:4px;
+    cursor:pointer; color:#fff; background:var(--accent);
+    transition:filter .15s;
+  }
+  button:hover{filter:brightness(1.15);}
+  button.danger{background:var(--danger); margin-left:auto;}
+  button:disabled{opacity:.4; cursor:not-allowed;}
+  /* Small screens */
+  @media(max-width:600px){
+    .name{width:auto;}
+    .time{font-size:11px;}
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <h1>Temperature Test Analyzer</h1>
+    <p>Drop a CSV file to analyze the thermal test phases</p>
+  </header>
+
+  <div class="dropzone" id="dropzone">
+    ⬇&nbsp;&nbsp; Drag &amp; Drop your CSV here &nbsp;·&nbsp; or click to browse
+  </div>
+  <input type="file" id="fileInput" accept=".csv">
+
+  <div class="file-info" id="fileInfo">No file loaded</div>
+
+  <div id="cards"></div>
+
+  <div class="runtime" id="runtimeCard" style="display:none;">
+    <div class="title">⏱ Total Test Runtime</div>
+    <div class="val" id="runtimeHM">—</div>
+    <div class="val" id="runtimeHrs" style="color:#94a3b8;">Decimal hours: —</div>
+  </div>
+
+  <div class="toolbar">
+    <button id="btnCopy" disabled>📋 Copy</button>
+    <button id="btnSave" disabled>💾 Save</button>
+    <button id="btnClear" class="danger" disabled>🗑 Clear</button>
+  </div>
+
+</div>
+
+<script>
+// ------------------------------------------------------------------
+// CONSTANTS
+// ------------------------------------------------------------------
+const DIP_DROP_COUNT  = 5;
+const SV_DROP_MIN     = 0.05;
+const PV_SV_TOLERANCE = 1.0;
+const TOL_CONSECUTIVE = 5;
+const NEG40_TARGET    = -40.0;
+const POS70_TARGET    = 70.0;
+const POS25_TARGET    = 25.0;
+const POS25_BAND      = 1.0;
+const SV_STEP         = 0.05;
+
+const RATE_STATES = new Set(["-40 Dip", "70 Rise", "25 Dip"]);
+const RANGE_ORDER = ["-40 Dip", "-40 Soak", "70 Rise", "70 Soak", "25 Dip"];
+
+// ------------------------------------------------------------------
+// DOM
+// ------------------------------------------------------------------
+const dropzone   = document.getElementById("dropzone");
+const fileInput  = document.getElementById("fileInput");
+const fileInfo   = document.getElementById("fileInfo");
+const cardsDiv   = document.getElementById("cards");
+const runtimeCard= document.getElementById("runtimeCard");
+const runtimeHM  = document.getElementById("runtimeHM");
+const runtimeHrs = document.getElementById("runtimeHrs");
+const btnCopy    = document.getElementById("btnCopy");
+const btnSave    = document.getElementById("btnSave");
+const btnClear   = document.getElementById("btnClear");
+
+let lastReport = "";
+
+// ------------------------------------------------------------------
+// BUILD CARDS
+// ------------------------------------------------------------------
+function buildCards(){
+  cardsDiv.innerHTML = "";
+  RANGE_ORDER.forEach((name, i) => {
+    const card = document.createElement("div");
+    card.className = "card" + (i % 2 ? " alt" : "");
+    card.id = "card-" + cssId(name);
+    card.innerHTML = `
+      <div class="row1">
+        <span class="name">${name}</span>
+        <span class="lbl">Start:</span>
+        <span class="time start">—</span>
+        <span class="lbl">End:</span>
+        <span class="time end">—</span>
+        <span class="status">—</span>
+      </div>
+      <div class="row2">
+        <span class="lbl">Duration:</span>
+        <span class="dur">—</span>
+        <span class="rate-wrap" style="display:none;">
+          <span class="lbl">Rate:</span>
+          <span class="rate">—</span>
+        </span>
+      </div>
+    `;
+    cardsDiv.appendChild(card);
+  });
+}
+function cssId(name){
+  return name.replace(/[^a-z0-9]/gi, "_");
+}
+buildCards();
+
+// ------------------------------------------------------------------
+// DRAG & DROP / CLICK
+// ------------------------------------------------------------------
+dropzone.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", e => {
+  if (e.target.files.length) handleFile(e.target.files[0]);
+});
+
+["dragenter","dragover"].forEach(ev =>
+  dropzone.addEventListener(ev, e => {
+    e.preventDefault(); dropzone.classList.add("dragover");
+  })
+);
+["dragleave","drop"].forEach(ev =>
+  dropzone.addEventListener(ev, e => {
+    e.preventDefault(); dropzone.classList.remove("dragover");
+  })
+);
+dropzone.addEventListener("drop", e => {
+  const f = e.dataTransfer.files[0];
+  if (f) handleFile(f);
+});
+
+// ------------------------------------------------------------------
+// FILE READING (encoding-safe)
+// ------------------------------------------------------------------
+function handleFile(file){
+  if (!file.name.toLowerCase().endsWith(".csv")){
+    alert("Please drop a CSV file.");
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    // FileReader gives us text as UTF-8 by default; if the CSV is
+    // cp1252, weird chars appear in the header but numbers parse fine.
+    processCSVText(reader.result, file.name);
+  };
+  // read as ArrayBuffer so we can try multiple encodings
+  reader.readAsArrayBuffer(file);
+  // Reassign: decode manually below
+  reader.onload = () => {
+    const bytes = new Uint8Array(reader.result);
+    const text = decodeBytes(bytes);
+    processCSVText(text, file.name);
+  };
+}
+
+function decodeBytes(bytes){
+  // Try utf-8 first
+  try {
+    const dec = new TextDecoder("utf-8", {fatal:true});
+    return dec.decode(bytes);
+  } catch(e){}
+  // Fallbacks
+  for (const enc of ["windows-1252","latin1","gbk","big5"]){
+    try {
+      const dec = new TextDecoder(enc, {fatal:false});
+      return dec.decode(bytes);
+    } catch(e){}
+  }
+  // Last resort
+  return new TextDecoder("utf-8").decode(bytes);
+}
+
+// ------------------------------------------------------------------
+// CSV PARSING
+// ------------------------------------------------------------------
+function processCSVText(text, filename){
+  const lines = text.split(/\r?\n/).filter(l => l.trim().length);
+  if (lines.length < 2){
+    alert("No data rows found.");
+    return;
+  }
+  const data = [];
+  for (let i = 1; i < lines.length; i++){
+    // simple split by comma (works since our CSV has no quoted commas)
+    const parts = lines[i].split(",");
+    if (parts.length < 4) continue;
+    const ts = parseTimestamp(parts[0].trim());
+    const pv = parseFloat(parts[2]);
+    const sv = parseFloat(parts[3]);
+    if (!ts || isNaN(pv) || isNaN(sv)) continue;
+    data.push({time: ts, pv, sv});
+  }
+  if (!data.length){
+    alert("No valid data rows found.");
+    return;
+  }
+
+  const ranges = analyze(data);
+  renderResults(data, ranges, filename);
+}
+
+function parseTimestamp(str){
+  // format: YYYY/MM/DD HH:MM:SS
+  const m = str.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2}):(\d{2})$/);
+  if (!m) return null;
+  const [_, y, mo, d, h, mi, s] = m;
+  return new Date(+y, +mo - 1, +d, +h, +mi, +s);
+}
+
+// ------------------------------------------------------------------
+// ANALYSIS
+// ------------------------------------------------------------------
+function analyze(data){
+  const n = data.length;
+  const pv = data.map(d => d.pv);
+  const sv = data.map(d => d.sv);
+
+  // Test start
+  let testStart = null;
+  for (let i = 0; i < n - DIP_DROP_COUNT; i++){
+    let ok = true;
+    for (let k = 1; k <= DIP_DROP_COUNT; k++){
+      if (!(sv[i+k] < sv[i+k-1] - SV_DROP_MIN)){ ok = false; break; }
+    }
+    if (ok){ testStart = i; break; }
+  }
+  if (testStart === null) testStart = 0;
+
+  // -40 reached
+  let neg40Reached = null;
+  for (let i = testStart; i < n; i++){
+    if (Math.abs(sv[i] - NEG40_TARGET) <= 0.1){
+      let ok = true;
+      for (let j = i; j < i + TOL_CONSECUTIVE && j < n; j++){
+        if (!(pv[j] <= sv[j] + PV_SV_TOLERANCE)){ ok = false; break; }
+      }
+      if (ok){ neg40Reached = i; break; }
+    }
+  }
+
+  // Rise start
+  let riseStart = null;
+  if (neg40Reached !== null){
+    for (let i = neg40Reached + 1; i < n; i++){
+      if (sv[i] > sv[i-1] + SV_STEP){ riseStart = i; break; }
+    }
+  }
+
+  // 70 reached
+  let pos70Reached = null;
+  if (riseStart !== null){
+    for (let i = riseStart; i < n; i++){
+      if (Math.abs(sv[i] - POS70_TARGET) <= 0.1){
+        let ok = true;
+        for (let j = i; j < i + TOL_CONSECUTIVE && j < n; j++){
+          if (!(pv[j] >= sv[j] - PV_SV_TOLERANCE)){ ok = false; break; }
+        }
+        if (ok){ pos70Reached = i; break; }
+      }
+    }
+  }
+
+  // Fall start
+  let fallStart = null;
+  if (pos70Reached !== null){
+    for (let i = pos70Reached + 1; i < n; i++){
+      if (sv[i] < sv[i-1] - SV_STEP){ fallStart = i; break; }
+    }
+  }
+
+  // 25 reached
+  let pos25Reached = null;
+  if (fallStart !== null){
+    for (let i = fallStart; i < n; i++){
+      if (Math.abs(sv[i] - POS25_TARGET) <= POS25_BAND){
+        pos25Reached = i; break;
+      }
+    }
+  }
+
+  const pt = idx => idx === null ? null : data[idx];
+
+  return {
+    "-40 Dip":  [pt(testStart),   pt(neg40Reached)],
+    "-40 Soak": [pt(neg40Reached),pt(riseStart)],
+    "70 Rise":  [pt(riseStart),   pt(pos70Reached)],
+    "70 Soak":  [pt(pos70Reached),pt(fallStart)],
+    "25 Dip":   [pt(fallStart),   pt(pos25Reached)],
+  };
+}
+
+// ------------------------------------------------------------------
+// FORMATTING HELPERS
+// ------------------------------------------------------------------
+function pad2(n){ return String(n).padStart(2,"0"); }
+function fmtTime(d){
+  return `${d.getFullYear()}/${pad2(d.getMonth()+1)}/${pad2(d.getDate())} ` +
+         `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+function fmtDuration(ms){
+  const totalMin = Math.floor(ms / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return `${h}:${pad2(m)}:00`;
+}
+function fmtHM(ms){
+  const totalMin = Math.floor(ms / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  const hStr = `${h} hour${h!==1?"s":""}`;
+  const mStr = `${m} minute${m!==1?"s":""}`;
+  if (h === 0) return mStr;
+  if (m === 0) return hStr;
+  return `${hStr} and ${mStr}`;
+}
+function fmtHrs(ms){
+  return (ms / 3600000).toFixed(3);
+}
+function computeRate(start, end){
+  if (!start || !end) return "—";
+  const dtMin = (end.time - start.time) / 60000;
+  if (dtMin <= 0) return "—";
+  const dPV = end.pv - start.pv;
+  const rate = dPV / dtMin;
+  const sign = rate >= 0 ? "+" : "";
+  return `${sign}${rate.toFixed(2)} °C/min`;
+}
+
+// ------------------------------------------------------------------
+// RENDER
+// ------------------------------------------------------------------
+function renderResults(data, ranges, filename){
+  // header info
+  fileInfo.textContent =
+    `📄 ${filename}  •  ${data.length} pts  •  ` +
+    `${fmtTime(data[0].time)} → ${fmtTime(data[data.length-1].time)}`;
+
+  const reportLines = [];
+
+  RANGE_ORDER.forEach(name => {
+    const [start, end] = ranges[name];
+    const card = document.getElementById("card-" + cssId(name));
+    const nameEl = card.querySelector(".name");
+    const startEl = card.querySelector(".start");
+    const endEl = card.querySelector(".end");
+    const statusEl = card.querySelector(".status");
+    const durEl = card.querySelector(".dur");
+    const rateWrap = card.querySelector(".rate-wrap");
+    const rateEl = card.querySelector(".rate");
+
+    if (start && end){
+      card.classList.add("ok");
+      startEl.textContent = fmtTime(start.time);
+      endEl.textContent   = fmtTime(end.time);
+      statusEl.textContent = "✓";
+      statusEl.className = "status ok";
+      durEl.textContent = fmtDuration(end.time - start.time);
+
+      let line = `${name.padEnd(10)}(start = ${fmtTime(start.time)}  |  end = ${fmtTime(end.time)})  [${fmtDuration(end.time-start.time)}]`;
+
+      if (RATE_STATES.has(name)){
+        const r = computeRate(start, end);
+        rateEl.textContent = r;
+        rateWrap.style.display = "";
+        line += `  rate = ${r}`;
+      } else {
+        rateWrap.style.display = "none";
+      }
+      reportLines.push(line);
+    } else {
+      card.classList.add("fail");
+      startEl.textContent = "—";
+      endEl.textContent   = "—";
+      statusEl.textContent = "✗";
+      statusEl.className = "status fail";
+      durEl.textContent = "—";
+      rateWrap.style.display = "none";
+      reportLines.push(`${name.padEnd(10)}NOT FOUND`);
+    }
+  });
+
+  // Runtime
+  const startPt = ranges["-40 Dip"][0];
+  const endPt   = ranges["25 Dip"][1];
+  runtimeCard.style.display = "";
+  let runtimeLine;
+  if (startPt && endPt){
+    const td = endPt.time - startPt.time;
+    runtimeHM.textContent  = fmtHM(td);
+    runtimeHrs.textContent = `Decimal hours: ${fmtHrs(td)} h`;
+    runtimeLine = `Total runtime: ${fmtHM(td)} (${fmtHrs(td)} h)`;
+  } else {
+    runtimeHM.textContent  = "—";
+    runtimeHrs.textContent = "Decimal hours: —";
+    runtimeLine = "Total runtime: NOT AVAILABLE";
+  }
+
+  // Full report
+  const header = [
+    "TEST ANALYSIS REPORT",
+    "=".repeat(60),
+    `File         : ${filename}`,
+    `Total points : ${data.length}`,
+    `First row    : ${fmtTime(data[0].time)}`,
+    `Last row     : ${fmtTime(data[data.length-1].time)}`,
+    "",
+    "RANGES",
+    "-".repeat(60),
+  ];
+  lastReport = [...header, ...reportLines, "", "-".repeat(60), runtimeLine].join("\n");
+
+  btnCopy.disabled = false;
+  btnSave.disabled = false;
+  btnClear.disabled = false;
+}
+
+// ------------------------------------------------------------------
+// TOOLBAR
+// ------------------------------------------------------------------
+btnCopy.addEventListener("click", () => {
+  navigator.clipboard.writeText(lastReport).then(
+    () => alert("Report copied to clipboard."),
+    () => alert("Copy failed — try manually selecting text.")
+  );
+});
+
+btnSave.addEventListener("click", () => {
+  const blob = new Blob([lastReport], {type:"text/plain;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "test_report.txt";
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+btnClear.addEventListener("click", () => {
+  lastReport = "";
+  fileInfo.textContent = "No file loaded";
+  buildCards();
+  runtimeCard.style.display = "none";
+  btnCopy.disabled = true;
+  btnSave.disabled = true;
+  btnClear.disabled = true;
+  fileInput.value = "";
+});
+</script>
+</body>
+</html>
