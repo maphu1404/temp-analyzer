@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Temperature Test Analyzer</title>
 
-<!-- Chart.js + annotation plugin -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
 
@@ -24,8 +23,8 @@
     min-height:100vh;
   }
   .container{
-    max-width:820px; margin:0 auto;
-    padding:20px 18px 40px;
+    max-width:1400px; margin:0 auto;
+    padding:20px 22px 40px;
   }
   header h1{
     font-size:18px; font-weight:600;
@@ -57,6 +56,22 @@
     margin:8px 2px 12px;
     word-break:break-all;
   }
+
+  /* -------- Two-column layout -------- */
+  .layout{
+    display:grid;
+    grid-template-columns: 1.3fr 1fr;
+    gap:14px;
+    margin-top:8px;
+  }
+  .left-col, .right-col{
+    display:flex; flex-direction:column;
+    gap:12px;
+  }
+  @media(max-width:900px){
+    .layout{grid-template-columns:1fr;}
+  }
+
   /* Cards */
   .card{
     background:var(--card);
@@ -64,7 +79,6 @@
     border-left:3px solid var(--accent);
     border-radius:5px;
     padding:8px 12px;
-    margin-bottom:6px;
   }
   .card.alt{background:var(--card-alt);}
   .card.ok{border-left-color:var(--accent2);}
@@ -110,7 +124,6 @@
     border-left:3px solid var(--accent3);
     border-radius:5px;
     padding:10px 12px;
-    margin-top:10px;
   }
   .runtime .title{
     font-weight:600; font-size:13px;
@@ -127,13 +140,15 @@
     border:1px solid var(--border);
     border-radius:6px;
     padding:10px;
-    margin-top:12px;
-    height:340px;
+    height:520px;
     position:relative;
+  }
+  @media(max-width:900px){
+    .chart-wrap{height:340px;}
   }
   /* Buttons */
   .toolbar{
-    display:flex; gap:8px; margin-top:12px;
+    display:flex; gap:8px; margin-top:14px;
     flex-wrap:wrap;
   }
   button{
@@ -149,7 +164,6 @@
   @media(max-width:600px){
     .name{width:auto;}
     .time{font-size:11px;}
-    .chart-wrap{height:240px;}
   }
 </style>
 </head>
@@ -168,16 +182,24 @@
 
   <div class="file-info" id="fileInfo">No file loaded</div>
 
-  <div id="cards"></div>
+  <div class="layout">
+    <!-- LEFT: chart -->
+    <div class="left-col">
+      <div class="chart-wrap" id="chartWrap" style="display:none;">
+        <canvas id="tempChart"></canvas>
+      </div>
+    </div>
 
-  <div class="chart-wrap" id="chartWrap" style="display:none;">
-    <canvas id="tempChart"></canvas>
-  </div>
+    <!-- RIGHT: cards + runtime -->
+    <div class="right-col">
+      <div id="cards"></div>
 
-  <div class="runtime" id="runtimeCard" style="display:none;">
-    <div class="title">⏱ Total Test Runtime</div>
-    <div class="val" id="runtimeHM">—</div>
-    <div class="val" id="runtimeHrs" style="color:#94a3b8;">Decimal hours: —</div>
+      <div class="runtime" id="runtimeCard" style="display:none;">
+        <div class="title">⏱ Total Test Runtime</div>
+        <div class="val" id="runtimeHM">—</div>
+        <div class="val" id="runtimeHrs" style="color:#94a3b8;">Decimal hours: —</div>
+      </div>
+    </div>
   </div>
 
   <div class="toolbar">
@@ -349,7 +371,6 @@ function analyze(data){
   const pv = data.map(d => d.pv);
   const sv = data.map(d => d.sv);
 
-  // Test start
   let testStart = null;
   for (let i = 0; i < n - DIP_DROP_COUNT; i++){
     let ok = true;
@@ -360,7 +381,6 @@ function analyze(data){
   }
   if (testStart === null) testStart = 0;
 
-  // -40 reached
   let neg40Reached = null;
   for (let i = testStart; i < n; i++){
     if (Math.abs(sv[i] - NEG40_TARGET) <= 0.1){
@@ -372,7 +392,6 @@ function analyze(data){
     }
   }
 
-  // Rise start
   let riseStart = null;
   if (neg40Reached !== null){
     for (let i = neg40Reached + 1; i < n; i++){
@@ -380,7 +399,6 @@ function analyze(data){
     }
   }
 
-  // 70 reached
   let pos70Reached = null;
   if (riseStart !== null){
     for (let i = riseStart; i < n; i++){
@@ -394,7 +412,6 @@ function analyze(data){
     }
   }
 
-  // Fall start
   let fallStart = null;
   if (pos70Reached !== null){
     for (let i = pos70Reached + 1; i < n; i++){
@@ -402,7 +419,6 @@ function analyze(data){
     }
   }
 
-  // 25 reached
   let pos25Reached = null;
   if (fallStart !== null){
     for (let i = fallStart; i < n; i++){
@@ -513,7 +529,6 @@ function renderResults(data, ranges, filename){
     }
   });
 
-  // Runtime
   const startPt = ranges["-40 Dip"][0];
   const endPt   = ranges["25 Dip"][1];
   runtimeCard.style.display = "";
@@ -529,7 +544,6 @@ function renderResults(data, ranges, filename){
     runtimeLine = "Total runtime: NOT AVAILABLE";
   }
 
-  // Report
   const header = [
     "TEST ANALYSIS REPORT",
     "=".repeat(60),
@@ -543,7 +557,6 @@ function renderResults(data, ranges, filename){
   ];
   lastReport = [...header, ...reportLines, "", "-".repeat(60), runtimeLine].join("\n");
 
-  // Chart
   buildChart(data, ranges);
 
   btnCopy.disabled = false;
@@ -582,16 +595,13 @@ function buildChart(data, ranges){
     "25 Dip":   "rgba(167,139,250,0.08)",
   };
 
-  // Annotations
   const annotations = {};
 
-  // Colored bands for each phase
   Object.entries(boundaries).forEach(([name, {start, end}]) => {
     if (start !== null && end !== null && end > start){
       annotations["band_" + name] = {
         type: "box",
-        xMin: start,
-        xMax: end,
+        xMin: start, xMax: end,
         backgroundColor: phaseColors[name],
         borderWidth: 0,
         drawTime: "beforeDatasetsDraw",
@@ -599,7 +609,6 @@ function buildChart(data, ranges){
     }
   });
 
-  // Boundary lines + small labels
   const boundaryPoints = [
     { idx: boundaries["-40 Dip"].start,  label: "-40 start" },
     { idx: boundaries["-40 Dip"].end,    label: "-40 reached" },
@@ -613,8 +622,7 @@ function buildChart(data, ranges){
     if (b.idx === null || b.idx === undefined) return;
     annotations["line" + i] = {
       type: "line",
-      xMin: b.idx,
-      xMax: b.idx,
+      xMin: b.idx, xMax: b.idx,
       borderColor: "rgba(148,163,184,0.55)",
       borderWidth: 1,
       borderDash: [4, 4],
@@ -694,7 +702,7 @@ function buildChart(data, ranges){
             font: { size: 9 },
             maxRotation: 0,
             autoSkip: true,
-            maxTicksLimit: 10,
+            maxTicksLimit: 12,
           },
           grid: { color: "rgba(51,65,85,0.4)" },
         },
