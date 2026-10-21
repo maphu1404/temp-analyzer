@@ -7,6 +7,8 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
 
 <style>
   :root{
@@ -143,6 +145,11 @@
     height:520px;
     position:relative;
   }
+  .chart-wrap .zoom-hint{
+    position:absolute; bottom:6px; right:10px;
+    font-size:10px; color:var(--muted);
+    pointer-events:none;
+  }
   @media(max-width:900px){
     .chart-wrap{height:340px;}
   }
@@ -160,6 +167,9 @@
   button:hover{filter:brightness(1.15);}
   button.danger{background:var(--danger); margin-left:auto;}
   button:disabled{opacity:.4; cursor:not-allowed;}
+  button.zoom-btn{
+    background:#475569; font-size:11px; padding:6px 10px;
+  }
   /* Small screens */
   @media(max-width:600px){
     .name{width:auto;}
@@ -187,6 +197,7 @@
     <div class="left-col">
       <div class="chart-wrap" id="chartWrap" style="display:none;">
         <canvas id="tempChart"></canvas>
+        <div class="zoom-hint">🖱️ Drag to zoom · Scroll to pan · Double-click to reset</div>
       </div>
     </div>
 
@@ -203,6 +214,7 @@
   </div>
 
   <div class="toolbar">
+    <button id="btnZoomReset" class="zoom-btn" disabled>🔍 Reset Zoom</button>
     <button id="btnCopy" disabled>📋 Copy</button>
     <button id="btnSave" disabled>💾 Save</button>
     <button id="btnClear" class="danger" disabled>🗑 Clear</button>
@@ -241,6 +253,7 @@ const runtimeHrs  = document.getElementById("runtimeHrs");
 const btnCopy     = document.getElementById("btnCopy");
 const btnSave     = document.getElementById("btnSave");
 const btnClear    = document.getElementById("btnClear");
+const btnZoomReset= document.getElementById("btnZoomReset");
 
 let lastReport = "";
 let tempChart = null;
@@ -330,57 +343,179 @@ function decodeBytes(bytes){
 }
 
 // ------------------------------------------------------------------
-// CSV PARSING
+// CSV PARSING – ROBUST VERSION
 // ------------------------------------------------------------------
-function splitCSVRow(line){
-  const out=[]; let field='', quoted=false;
-  for(let i=0;i<line.length;i++){
-    const c=line[i];
-    if(c==='"'){
-      if(quoted && line[i+1]==='"'){field+='"';i++;}
-      else quoted=!quoted;
-    }else if(c===',' && !quoted){out.push(field.trim());field='';}
-    else field+=c;
+function detectDelimiter(line) {
+  const candidates = [',', ';', '\t', '|'];
+  let best = ',';
+  let maxCount = 0;
+
+  for (const d of candidates) {
+    const count = line.split(d).length - 1;
+    if (count > maxCount) {
+      maxCount = count;
+      best = d;
+    }
   }
+
+  return best;
+}
+
+function splitCSVRow(line, delimiter = ',') {
+  const out = [];
+  let field = '';
+  let quoted = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+
+    if (c === '"') {
+      if (quoted && line[i + 1] === '"') {
+        field += '"';
+        i++;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (c === delimiter && !quoted) {
+      out.push(field.trim());
+      field = '';
+    } else {
+      field += c;
+    }
+  }
+
   out.push(field.trim());
   return out;
 }
-function processCSVText(text, filename){
-  const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/).filter(l=>l.trim().length);
-  if(lines.length<2){alert('No data rows found.');return;}
-  const header=splitCSVRow(lines[0]).map(h=>h.replace(/^"|"$/g,'').trim().toLowerCase());
-  const timeCol=header.findIndex(h=>h==='mcgs_time');
-  const tc=timeCol>=0?timeCol:0;
-  // MCGS exports: timestamp, milliseconds, temperature PV, temperature SV, humidity PV, humidity SV.
-  const data=[]; let skipped=0;
-  for(let i=1;i<lines.length;i++){
-    const p=splitCSVRow(lines[i]);
-    if(p.length<4){skipped++;continue;}
-    const ts=parseTimestamp(p[tc]);
-    const pv=Number(p[2]),sv=Number(p[3]);
-    if(!ts || !Number.isFinite(pv) || !Number.isFinite(sv) || !p[2].trim() || !p[3].trim()){
-      skipped++;continue;
-    }
-    data.push({time:ts,pv,sv});
+
+function parseNumber(str) {
+  if (!str) return NaN;
+  let s = String(str).trim().replace(/^"|"$/g, '');
+  if (/^-?\d+,\d+$/.test(s)) {
+    s = s.replace(',', '.');
   }
-  if(!data.length){alert('No valid temperature rows found. Check CSV columns and date format.');return;}
-  data.sort((a,b)=>a.time-b.time);
-  const ranges=analyze(data);
-  renderResults(data,ranges,filename);
-  if(skipped) fileInfo.textContent+=`  •  ${skipped} skipped rows`;
+  return Number(s);
 }
-function parseTimestamp(str){
-  if(!str)return null;
-  const m=String(str).trim().replace(/^"|"$/g,'').match(/^(\d{4}|\d{1,2})[\/-](\d{1,2})[\/-](\d{1,4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/);
-  if(!m)return null;
-  let y,mo,d;
-  if(m[1].length===4){y=+m[1];mo=+m[2];d=+m[3];}
-  else if(m[3].length===4){mo=+m[1];d=+m[2];y=+m[3];}
-  else return null;
-  const h=+m[4],mi=+m[5],sec=+(m[6]||0);
-  const dt=new Date(y,mo-1,d,h,mi,sec);
-  if(dt.getFullYear()!==y || dt.getMonth()!==mo-1 || dt.getDate()!==d || dt.getHours()!==h || dt.getMinutes()!==mi || dt.getSeconds()!==sec)return null;
-  return dt;
+
+function processCSVText(text, filename) {
+  const rawLines = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter(l => l.trim().length);
+  if (rawLines.length < 2) {
+    alert('No data rows found.');
+    return;
+  }
+
+  const firstLine = rawLines[0];
+  const delimiter = detectDelimiter(firstLine);
+
+  let headerIndex = -1;
+  let header = [];
+  for (let i = 0; i < Math.min(rawLines.length, 10); i++) {
+    const cols = splitCSVRow(rawLines[i], delimiter).map(h => h.replace(/^"|"$/g, '').trim().toLowerCase());
+    if (cols.some(c => c.includes('time') || c.includes('pv') || c.includes('sv') || c.includes('temp'))) {
+      headerIndex = i;
+      header = cols;
+      break;
+    }
+  }
+
+  if (headerIndex === -1) {
+    headerIndex = 0;
+    header = splitCSVRow(rawLines[0], delimiter).map(h => h.replace(/^"|"$/g, '').trim().toLowerCase());
+  }
+
+  const findCol = (keywords) => {
+    for (let i = 0; i < header.length; i++) {
+      const h = header[i];
+      if (keywords.some(k => h.includes(k))) return i;
+    }
+    return -1;
+  };
+
+  const timeCol = findCol(['time', 'timestamp', 'mcgs_time', 'date']);
+  let pvCol = findCol(['pv', 'process', 'actual', 'temp']);
+  let svCol = findCol(['sv', 'setpoint', 'set point', 'target']);
+
+  if (pvCol === -1) pvCol = 1;
+  if (svCol === -1) svCol = 2;
+
+  const data = [];
+  let skipped = 0;
+
+  for (let i = headerIndex + 1; i < rawLines.length; i++) {
+    const p = splitCSVRow(rawLines[i], delimiter);
+    if (p.length <= Math.max(timeCol, pvCol, svCol)) {
+      skipped++;
+      continue;
+    }
+
+    const ts = parseTimestamp(p[timeCol]);
+    const pv = parseNumber(p[pvCol]);
+    const sv = parseNumber(p[svCol]);
+
+    if (!ts || !Number.isFinite(pv) || !Number.isFinite(sv)) {
+      skipped++;
+      continue;
+    }
+
+    data.push({ time: ts, pv, sv });
+  }
+
+  if (!data.length) {
+    alert('No valid temperature rows found. Check CSV columns and date format.');
+    return;
+  }
+
+  data.sort((a, b) => a.time - b.time);
+  const ranges = analyze(data);
+  renderResults(data, ranges, filename);
+  if (skipped) fileInfo.textContent += `  •  ${skipped} skipped rows`;
+}
+
+// ------------------------------------------------------------------
+// FLEXIBLE TIMESTAMP PARSER
+// ------------------------------------------------------------------
+function parseTimestamp(str) {
+  if (!str) return null;
+  let s = String(str).trim().replace(/^"|"$/g, '');
+
+  const native = new Date(s);
+  if (!isNaN(native.getTime())) return native;
+
+  const regexes = [
+    /^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/,
+    /^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/,
+    /^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/,
+  ];
+
+  for (const re of regexes) {
+    const m = s.match(re);
+    if (!m) continue;
+
+    let y, mo, d;
+    if (m[1].length === 4) {
+      y = +m[1]; mo = +m[2]; d = +m[3];
+    } else if (m[3].length === 4) {
+      mo = +m[1]; d = +m[2]; y = +m[3];
+    } else {
+      continue;
+    }
+
+    const h = +m[4], mi = +m[5], sec = +(m[6] || 0);
+    const dt = new Date(y, mo - 1, d, h, mi, sec);
+
+    if (
+      dt.getFullYear() === y &&
+      dt.getMonth() === mo - 1 &&
+      dt.getDate() === d &&
+      dt.getHours() === h &&
+      dt.getMinutes() === mi &&
+      dt.getSeconds() === sec
+    ) {
+      return dt;
+    }
+  }
+
+  return null;
 }
 
 // ------------------------------------------------------------------
@@ -466,24 +601,24 @@ function analyze(data){
 // ------------------------------------------------------------------
 function pad2(n){ return String(n).padStart(2,"0"); }
 function fmtTime(d){
-  return ${d.getFullYear()}/${pad2(d.getMonth()+1)}/${pad2(d.getDate())}  +
-         ${pad2(d.getHours())}:${pad2(d.getMinutes())};
+  return `${d.getFullYear()}/${pad2(d.getMonth()+1)}/${pad2(d.getDate())}  ` +
+         `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 function fmtDuration(ms){
   const totalMin = Math.floor(ms / 60000);
   const h = Math.floor(totalMin / 60);
   const m = totalMin % 60;
-  return ${h}:${pad2(m)}:00;
+  return `${h}:${pad2(m)}:00`;
 }
 function fmtHM(ms){
   const totalMin = Math.floor(ms / 60000);
   const h = Math.floor(totalMin / 60);
   const m = totalMin % 60;
-  const hStr = ${h} hour${h!==1?"s":""};
-  const mStr = ${m} minute${m!==1?"s":""};
+  const hStr = `${h} hour${h!==1?"s":""}`;
+  const mStr = `${m} minute${m!==1?"s":""}`;
   if (h === 0) return mStr;
   if (m === 0) return hStr;
-  return ${hStr} and ${mStr};
+  return `${hStr} and ${mStr}`;
 }
 function fmtHrs(ms){
   return (ms / 3600000).toFixed(3);
@@ -495,7 +630,7 @@ function computeRate(start, end){
   const dPV = end.pv - start.pv;
   const rate = dPV / dtMin;
   const sign = rate >= 0 ? "+" : "";
-  return ${sign}${rate.toFixed(2)} °C/min;
+  return `${sign}${rate.toFixed(2)} °C/min`;
 }
 
 // ------------------------------------------------------------------
@@ -503,8 +638,8 @@ function computeRate(start, end){
 // ------------------------------------------------------------------
 function renderResults(data, ranges, filename){
   fileInfo.textContent =
-   📄 ${filename}  •  ${data.length} pts  •  ` +
-    ${fmtTime(data[0].time)} → ${fmtTime(data[data.length-1].time)};
+   `📄 ${filename}  •  ${data.length} pts  •  ` +
+    `${fmtTime(data[0].time)} → ${fmtTime(data[data.length-1].time)}`;
 
   const reportLines = [];
 
@@ -527,13 +662,13 @@ function renderResults(data, ranges, filename){
       statusEl.className = "status ok";
       durEl.textContent = fmtDuration(end.time - start.time);
 
-      let line = ${name.padEnd(10)}(start = ${fmtTime(start.time)} | end = ${fmtTime(end.time)}) [${fmtDuration(end.time-start.time)}];
+      let line = `${name.padEnd(10)}(start = ${fmtTime(start.time)} | end = ${fmtTime(end.time)}) [${fmtDuration(end.time-start.time)}];`;
 
       if (RATE_STATES.has(name)){
         const r = computeRate(start, end);
         rateEl.textContent = r;
         rateWrap.style.display = "";
-        line +=   rate = ${r};
+        line += `  rate = ${r};`;
       } else {
         rateWrap.style.display = "none";
       }
@@ -546,7 +681,7 @@ function renderResults(data, ranges, filename){
       statusEl.className = "status fail";
       durEl.textContent = "—";
       rateWrap.style.display = "none";
-      reportLines.push(${name.padEnd(10)}NOT FOUND);
+      reportLines.push(`${name.padEnd(10)}NOT FOUND`);
     }
   });
 
@@ -557,8 +692,8 @@ function renderResults(data, ranges, filename){
   if (startPt && endPt){
     const td = endPt.time - startPt.time;
     runtimeHM.textContent  = fmtHM(td);
-    runtimeHrs.textContent = Decimal hours: ${fmtHrs(td)} h;
-    runtimeLine = Total runtime: ${fmtHM(td)} (${fmtHrs(td)} h);
+    runtimeHrs.textContent = `Decimal hours: ${fmtHrs(td)} h`;
+    runtimeLine = `Total runtime: ${fmtHM(td)} (${fmtHrs(td)} h)`;
   } else {
     runtimeHM.textContent  = "—";
     runtimeHrs.textContent = "Decimal hours: —";
@@ -568,10 +703,10 @@ function renderResults(data, ranges, filename){
   const header = [
     "TEST ANALYSIS REPORT",
     "=".repeat(60),
-    File         : ${filename},
-    Total points : ${data.length},
-    First row    : ${fmtTime(data[0].time)},
-    Last row     : ${fmtTime(data[data.length-1].time)},
+    `File         : ${filename}`,
+    `Total points : ${data.length}`,
+    `First row    : ${fmtTime(data[0].time)}`,
+    `Last row     : ${fmtTime(data[data.length-1].time)}`,
     "",
     "RANGES",
     "-".repeat(60),
@@ -583,17 +718,18 @@ function renderResults(data, ranges, filename){
   btnCopy.disabled = false;
   btnSave.disabled = false;
   btnClear.disabled = false;
+  btnZoomReset.disabled = false;
 }
 
 // ------------------------------------------------------------------
-// CHART
+// CHART (with zoom & pan)
 // ------------------------------------------------------------------
 function buildChart(data, ranges){
   const ctx = document.getElementById("tempChart").getContext("2d");
   chartWrap.style.display = "";
 
   const labels = data.map(d =>
-    ${pad2(d.time.getHours())}:${pad2(d.time.getMinutes())}
+    `${pad2(d.time.getHours())}:${pad2(d.time.getMinutes())}`
   );
   const pvData = data.map(d => d.pv);
   const svData = data.map(d => d.sv);
@@ -711,10 +847,37 @@ function buildChart(data, ranges){
           titleColor: "#e2e8f0",
           bodyColor: "#e2e8f0",
           callbacks: {
-            label: c => ${c.dataset.label}: ${c.parsed.y.toFixed(2)} °C,
+            label: c => `${c.dataset.label}: ${c.parsed.y.toFixed(2)} °C`,
           },
         },
         annotation: { annotations },
+        zoom: {
+          pan: {
+            enabled: true,
+            mode: "x",
+            modifierKey: null,
+          },
+          zoom: {
+            wheel: {
+              enabled: true,
+              speed: 0.1,
+            },
+            pinch: {
+              enabled: true,
+            },
+            drag: {
+              enabled: true,
+              backgroundColor: "rgba(56,189,248,0.15)",
+              borderColor: "rgba(56,189,248,0.5)",
+              borderWidth: 1,
+            },
+            mode: "x",
+          },
+          limits: {
+            x: { min: 0, max: data.length - 1, minRange: 10 },
+            y: { min: -60, max: 90, minRange: 10 },
+          },
+        },
       },
       scales: {
         x: {
@@ -737,7 +900,10 @@ function buildChart(data, ranges){
         },
       },
     },
-    plugins: [window["chartjs-plugin-annotation"]],
+    plugins: [
+      window["chartjs-plugin-annotation"],
+      window["chartjs-plugin-zoom"],
+    ],
   });
 }
 
@@ -761,6 +927,10 @@ btnSave.addEventListener("click", () => {
   URL.revokeObjectURL(url);
 });
 
+btnZoomReset.addEventListener("click", () => {
+  if (tempChart) tempChart.resetZoom();
+});
+
 btnClear.addEventListener("click", () => {
   lastReport = "";
   fileInfo.textContent = "No file loaded";
@@ -771,6 +941,7 @@ btnClear.addEventListener("click", () => {
   btnCopy.disabled = true;
   btnSave.disabled = true;
   btnClear.disabled = true;
+  btnZoomReset.disabled = true;
   fileInput.value = "";
 });
 </script>
