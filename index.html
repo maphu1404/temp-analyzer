@@ -193,7 +193,6 @@
   <div class="file-info" id="fileInfo">No file loaded</div>
 
   <div class="layout">
-    <!-- LEFT: chart -->
     <div class="left-col">
       <div class="chart-wrap" id="chartWrap" style="display:none;">
         <canvas id="tempChart"></canvas>
@@ -201,10 +200,8 @@
       </div>
     </div>
 
-    <!-- RIGHT: cards + runtime -->
     <div class="right-col">
       <div id="cards"></div>
-
       <div class="runtime" id="runtimeCard" style="display:none;">
         <div class="title">⏱ Total Test Runtime</div>
         <div class="val" id="runtimeHM">—</div>
@@ -314,7 +311,7 @@ dropzone.addEventListener("drop", e => {
 });
 
 // ------------------------------------------------------------------
-// FILE READING
+// FILE READING & PARSING (EXACT ORIGINAL LOGIC)
 // ------------------------------------------------------------------
 function handleFile(file){
   if (!file.name.toLowerCase().endsWith(".csv")){
@@ -342,180 +339,58 @@ function decodeBytes(bytes){
   return new TextDecoder("utf-8").decode(bytes);
 }
 
-// ------------------------------------------------------------------
-// CSV PARSING – ROBUST VERSION
-// ------------------------------------------------------------------
-function detectDelimiter(line) {
-  const candidates = [',', ';', '\t', '|'];
-  let best = ',';
-  let maxCount = 0;
-
-  for (const d of candidates) {
-    const count = line.split(d).length - 1;
-    if (count > maxCount) {
-      maxCount = count;
-      best = d;
-    }
+function splitCSVRow(line){
+  const out=[]; let field='', quoted=false;
+  for(let i=0;i<line.length;i++){
+    const c=line[i];
+    if(c==='"'){
+      if(quoted && line[i+1]==='"'){field+='"';i++;}
+      else quoted=!quoted;
+    }else if(c===',' && !quoted){out.push(field.trim());field='';}
+    else field+=c;
   }
-
-  return best;
-}
-
-function splitCSVRow(line, delimiter = ',') {
-  const out = [];
-  let field = '';
-  let quoted = false;
-
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-
-    if (c === '"') {
-      if (quoted && line[i + 1] === '"') {
-        field += '"';
-        i++;
-      } else {
-        quoted = !quoted;
-      }
-    } else if (c === delimiter && !quoted) {
-      out.push(field.trim());
-      field = '';
-    } else {
-      field += c;
-    }
-  }
-
   out.push(field.trim());
   return out;
 }
 
-function parseNumber(str) {
-  if (!str) return NaN;
-  let s = String(str).trim().replace(/^"|"$/g, '');
-  if (/^-?\d+,\d+$/.test(s)) {
-    s = s.replace(',', '.');
+function processCSVText(text, filename){
+  const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/).filter(l=>l.trim().length);
+  if(lines.length<2){alert('No data rows found.');return;}
+  const header=splitCSVRow(lines[0]).map(h=>h.replace(/^"|"$/g,'').trim().toLowerCase());
+  const timeCol=header.findIndex(h=>h==='mcgs_time');
+  const tc=timeCol>=0?timeCol:0;
+  
+  // MCGS exports: timestamp, milliseconds, temperature PV, temperature SV, humidity PV, humidity SV.
+  const data=[]; let skipped=0;
+  for(let i=1;i<lines.length;i++){
+    const p=splitCSVRow(lines[i]);
+    if(p.length<4){skipped++;continue;}
+    const ts=parseTimestamp(p[tc]);
+    const pv=Number(p[2]),sv=Number(p[3]);
+    if(!ts || !Number.isFinite(pv) || !Number.isFinite(sv) || !p[2].trim() || !p[3].trim()){
+      skipped++;continue;
+    }
+    data.push({time:ts,pv,sv});
   }
-  return Number(s);
+  if(!data.length){alert('No valid temperature rows found. Check CSV columns and date format.');return;}
+  data.sort((a,b)=>a.time-b.time);
+  const ranges=analyze(data);
+  renderResults(data,ranges,filename);
+  if(skipped) fileInfo.textContent+=`  •  ${skipped} skipped rows`;
 }
 
-function processCSVText(text, filename) {
-  const rawLines = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter(l => l.trim().length);
-  if (rawLines.length < 2) {
-    alert('No data rows found.');
-    return;
-  }
-
-  const firstLine = rawLines[0];
-  const delimiter = detectDelimiter(firstLine);
-
-  let headerIndex = -1;
-  let header = [];
-  for (let i = 0; i < Math.min(rawLines.length, 10); i++) {
-    const cols = splitCSVRow(rawLines[i], delimiter).map(h => h.replace(/^"|"$/g, '').trim().toLowerCase());
-    if (cols.some(c => c.includes('time') || c.includes('pv') || c.includes('sv') || c.includes('temp'))) {
-      headerIndex = i;
-      header = cols;
-      break;
-    }
-  }
-
-  if (headerIndex === -1) {
-    headerIndex = 0;
-    header = splitCSVRow(rawLines[0], delimiter).map(h => h.replace(/^"|"$/g, '').trim().toLowerCase());
-  }
-
-  const findCol = (keywords) => {
-    for (let i = 0; i < header.length; i++) {
-      const h = header[i];
-      if (keywords.some(k => h.includes(k))) return i;
-    }
-    return -1;
-  };
-
-  const timeCol = findCol(['time', 'timestamp', 'mcgs_time', 'date']);
-  let pvCol = findCol(['pv', 'process', 'actual', 'temp']);
-  let svCol = findCol(['sv', 'setpoint', 'set point', 'target']);
-
-  if (pvCol === -1) pvCol = 1;
-  if (svCol === -1) svCol = 2;
-
-  const data = [];
-  let skipped = 0;
-
-  for (let i = headerIndex + 1; i < rawLines.length; i++) {
-    const p = splitCSVRow(rawLines[i], delimiter);
-    if (p.length <= Math.max(timeCol, pvCol, svCol)) {
-      skipped++;
-      continue;
-    }
-
-    const ts = parseTimestamp(p[timeCol]);
-    const pv = parseNumber(p[pvCol]);
-    const sv = parseNumber(p[svCol]);
-
-    if (!ts || !Number.isFinite(pv) || !Number.isFinite(sv)) {
-      skipped++;
-      continue;
-    }
-
-    data.push({ time: ts, pv, sv });
-  }
-
-  if (!data.length) {
-    alert('No valid temperature rows found. Check CSV columns and date format.');
-    return;
-  }
-
-  data.sort((a, b) => a.time - b.time);
-  const ranges = analyze(data);
-  renderResults(data, ranges, filename);
-  if (skipped) fileInfo.textContent += `  •  ${skipped} skipped rows`;
-}
-
-// ------------------------------------------------------------------
-// FLEXIBLE TIMESTAMP PARSER
-// ------------------------------------------------------------------
-function parseTimestamp(str) {
-  if (!str) return null;
-  let s = String(str).trim().replace(/^"|"$/g, '');
-
-  const native = new Date(s);
-  if (!isNaN(native.getTime())) return native;
-
-  const regexes = [
-    /^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/,
-    /^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/,
-    /^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/,
-  ];
-
-  for (const re of regexes) {
-    const m = s.match(re);
-    if (!m) continue;
-
-    let y, mo, d;
-    if (m[1].length === 4) {
-      y = +m[1]; mo = +m[2]; d = +m[3];
-    } else if (m[3].length === 4) {
-      mo = +m[1]; d = +m[2]; y = +m[3];
-    } else {
-      continue;
-    }
-
-    const h = +m[4], mi = +m[5], sec = +(m[6] || 0);
-    const dt = new Date(y, mo - 1, d, h, mi, sec);
-
-    if (
-      dt.getFullYear() === y &&
-      dt.getMonth() === mo - 1 &&
-      dt.getDate() === d &&
-      dt.getHours() === h &&
-      dt.getMinutes() === mi &&
-      dt.getSeconds() === sec
-    ) {
-      return dt;
-    }
-  }
-
-  return null;
+function parseTimestamp(str){
+  if(!str)return null;
+  const m=String(str).trim().replace(/^"|"$/g,'').match(/^(\d{4}|\d{1,2})[\/-](\d{1,2})[\/-](\d{1,4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if(!m)return null;
+  let y,mo,d;
+  if(m[1].length===4){y=+m[1];mo=+m[2];d=+m[3];}
+  else if(m[3].length===4){mo=+m[1];d=+m[2];y=+m[3];}
+  else return null;
+  const h=+m[4],mi=+m[5],sec=+(m[6]||0);
+  const dt=new Date(y,mo-1,d,h,mi,sec);
+  if(dt.getFullYear()!==y || dt.getMonth()!==mo-1 || dt.getDate()!==d || dt.getHours()!==h || dt.getMinutes()!==mi || dt.getSeconds()!==sec)return null;
+  return dt;
 }
 
 // ------------------------------------------------------------------
