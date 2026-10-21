@@ -5,10 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Temperature Test Analyzer</title>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<!-- Only Chart.js and Annotation are needed now -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
 
 <style>
   :root{
@@ -144,6 +143,7 @@
     padding:10px;
     height:520px;
     position:relative;
+    display: none; /* Hidden until data is loaded */
   }
   .chart-wrap .zoom-hint{
     position:absolute; bottom:6px; right:10px;
@@ -194,10 +194,7 @@
 
   <div class="layout">
     <div class="left-col">
-      <div class="chart-wrap" id="chartWrap" style="display:none;">
-        <canvas id="tempChart"></canvas>
-        <div class="zoom-hint">🖱️ Drag to zoom · Scroll to pan · Double-click to reset</div>
-      </div>
+      <div id="chartContainer"></div>
     </div>
 
     <div class="right-col">
@@ -220,605 +217,709 @@
 </div>
 
 <script>
-// ------------------------------------------------------------------
-// CONSTANTS
-// ------------------------------------------------------------------
-const DIP_DROP_COUNT  = 5;
-const SV_DROP_MIN     = 0.05;
-const PV_SV_TOLERANCE = 1.0;
-const TOL_CONSECUTIVE = 5;
-const NEG40_TARGET    = -40.0;
-const POS70_TARGET    = 70.0;
-const POS25_TARGET    = 25.0;
-const POS25_BAND      = 1.0;
-const SV_STEP         = 0.05;
+try {
+  // Register ONLY the annotation plugin globally
+  if (window['chartjs-plugin-annotation']) {
+    Chart.register(window['chartjs-plugin-annotation']);
+  }
 
-const RATE_STATES = new Set(["-40 Dip", "70 Rise", "25 Dip"]);
-const RANGE_ORDER = ["-40 Dip", "-40 Soak", "70 Rise", "70 Soak", "25 Dip"];
+  // ------------------------------------------------------------------
+  // CONSTANTS
+  // ------------------------------------------------------------------
+  const DIP_DROP_COUNT  = 5;
+  const SV_DROP_MIN     = 0.05;
+  const PV_SV_TOLERANCE = 1.0;
+  const TOL_CONSECUTIVE = 5;
+  const NEG40_TARGET    = -40.0;
+  const POS70_TARGET    = 70.0;
+  const POS25_TARGET    = 25.0;
+  const POS25_BAND      = 1.0;
+  const SV_STEP         = 0.05;
 
-// ------------------------------------------------------------------
-// DOM
-// ------------------------------------------------------------------
-const dropzone    = document.getElementById("dropzone");
-const fileInput   = document.getElementById("fileInput");
-const fileInfo    = document.getElementById("fileInfo");
-const cardsDiv    = document.getElementById("cards");
-const chartWrap   = document.getElementById("chartWrap");
-const runtimeCard = document.getElementById("runtimeCard");
-const runtimeHM   = document.getElementById("runtimeHM");
-const runtimeHrs  = document.getElementById("runtimeHrs");
-const btnCopy     = document.getElementById("btnCopy");
-const btnSave     = document.getElementById("btnSave");
-const btnClear    = document.getElementById("btnClear");
-const btnZoomReset= document.getElementById("btnZoomReset");
+  const RATE_STATES = new Set(["-40 Dip", "70 Rise", "25 Dip"]);
+  const RANGE_ORDER = ["-40 Dip", "-40 Soak", "70 Rise", "70 Soak", "25 Dip"];
 
-let lastReport = "";
-let tempChart = null;
+  // ------------------------------------------------------------------
+  // DOM
+  // ------------------------------------------------------------------
+  const dropzone    = document.getElementById("dropzone");
+  const fileInput   = document.getElementById("fileInput");
+  const fileInfo    = document.getElementById("fileInfo");
+  const cardsDiv    = document.getElementById("cards");
+  const chartContainer = document.getElementById("chartContainer");
+  const runtimeCard = document.getElementById("runtimeCard");
+  const runtimeHM   = document.getElementById("runtimeHM");
+  const runtimeHrs  = document.getElementById("runtimeHrs");
+  const btnCopy     = document.getElementById("btnCopy");
+  const btnSave     = document.getElementById("btnSave");
+  const btnClear    = document.getElementById("btnClear");
+  const btnZoomReset= document.getElementById("btnZoomReset");
 
-// ------------------------------------------------------------------
-// BUILD CARDS
-// ------------------------------------------------------------------
-function buildCards(){
-  cardsDiv.innerHTML = "";
-  RANGE_ORDER.forEach((name, i) => {
-    const card = document.createElement("div");
-    card.className = "card" + (i % 2 ? " alt" : "");
-    card.id = "card-" + cssId(name);
-    card.innerHTML = `
-      <div class="row1">
-        <span class="name">${name}</span>
-        <span class="lbl">Start:</span>
-        <span class="time start">—</span>
-        <span class="lbl">End:</span>
-        <span class="time end">—</span>
-        <span class="status">—</span>
-      </div>
-      <div class="row2">
-        <span class="lbl">Duration:</span>
-        <span class="dur">—</span>
-        <span class="rate-wrap" style="display:none;">
-          <span class="lbl">Rate:</span>
-          <span class="rate">—</span>
-        </span>
-      </div>
-    `;
-    cardsDiv.appendChild(card);
+  let lastReport = "";
+  let tempChart = null;
+  let minIndex = 0;
+  let maxIndex = 999999;
+  let totalDataPoints = 0;
+
+  // ------------------------------------------------------------------
+  // BUILD CARDS
+  // ------------------------------------------------------------------
+  function buildCards(){
+    cardsDiv.innerHTML = "";
+    RANGE_ORDER.forEach((name, i) => {
+      const card = document.createElement("div");
+      card.className = "card" + (i % 2 ? " alt" : "");
+      card.id = "card-" + cssId(name);
+      card.innerHTML = `
+        <div class="row1">
+          <span class="name">${name}</span>
+          <span class="lbl">Start:</span>
+          <span class="time start">—</span>
+          <span class="lbl">End:</span>
+          <span class="time end">—</span>
+          <span class="status">—</span>
+        </div>
+        <div class="row2">
+          <span class="lbl">Duration:</span>
+          <span class="dur">—</span>
+          <span class="rate-wrap" style="display:none;">
+            <span class="lbl">Rate:</span>
+            <span class="rate">—</span>
+          </span>
+        </div>
+      `;
+      cardsDiv.appendChild(card);
+    });
+  }
+  function cssId(name){ return name.replace(/[^a-z0-9]/gi, "_"); }
+  buildCards();
+
+  // ------------------------------------------------------------------
+  // DRAG & DROP / CLICK
+  // ------------------------------------------------------------------
+  dropzone.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", e => {
+    if (e.target.files.length) handleFile(e.target.files[0]);
   });
-}
-function cssId(name){ return name.replace(/[^a-z0-9]/gi, "_"); }
-buildCards();
+  ["dragenter","dragover"].forEach(ev =>
+    dropzone.addEventListener(ev, e => {
+      e.preventDefault(); dropzone.classList.add("dragover");
+    })
+  );
+  ["dragleave","drop"].forEach(ev =>
+    dropzone.addEventListener(ev, e => {
+      e.preventDefault(); dropzone.classList.remove("dragover");
+    })
+  );
+  dropzone.addEventListener("drop", e => {
+    const f = e.dataTransfer.files[0];
+    if (f) handleFile(f);
+  });
 
-// ------------------------------------------------------------------
-// DRAG & DROP / CLICK
-// ------------------------------------------------------------------
-dropzone.addEventListener("click", () => fileInput.click());
-fileInput.addEventListener("change", e => {
-  if (e.target.files.length) handleFile(e.target.files[0]);
-});
-["dragenter","dragover"].forEach(ev =>
-  dropzone.addEventListener(ev, e => {
-    e.preventDefault(); dropzone.classList.add("dragover");
-  })
-);
-["dragleave","drop"].forEach(ev =>
-  dropzone.addEventListener(ev, e => {
-    e.preventDefault(); dropzone.classList.remove("dragover");
-  })
-);
-dropzone.addEventListener("drop", e => {
-  const f = e.dataTransfer.files[0];
-  if (f) handleFile(f);
-});
-
-// ------------------------------------------------------------------
-// FILE READING & PARSING (EXACT ORIGINAL LOGIC)
-// ------------------------------------------------------------------
-function handleFile(file){
-  if (!file.name.toLowerCase().endsWith(".csv")){
-    alert("Please drop a CSV file.");
-    return;
+  // ------------------------------------------------------------------
+  // FILE READING & PARSING
+  // ------------------------------------------------------------------
+  function handleFile(file){
+    if (!file.name.toLowerCase().endsWith(".csv")){
+      alert("Please drop a CSV file.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const bytes = new Uint8Array(reader.result);
+      const text = decodeBytes(bytes);
+      processCSVText(text, file.name);
+    };
+    reader.readAsArrayBuffer(file);
   }
-  const reader = new FileReader();
-  reader.onload = () => {
-    const bytes = new Uint8Array(reader.result);
-    const text = decodeBytes(bytes);
-    processCSVText(text, file.name);
-  };
-  reader.readAsArrayBuffer(file);
-}
 
-function decodeBytes(bytes){
-  try {
-    return new TextDecoder("utf-8", {fatal:true}).decode(bytes);
-  } catch(e){}
-  for (const enc of ["windows-1252","latin1","gbk","big5"]){
+  function decodeBytes(bytes){
     try {
-      return new TextDecoder(enc, {fatal:false}).decode(bytes);
+      return new TextDecoder("utf-8", {fatal:true}).decode(bytes);
     } catch(e){}
-  }
-  return new TextDecoder("utf-8").decode(bytes);
-}
-
-function splitCSVRow(line){
-  const out=[]; let field='', quoted=false;
-  for(let i=0;i<line.length;i++){
-    const c=line[i];
-    if(c==='"'){
-      if(quoted && line[i+1]==='"'){field+='"';i++;}
-      else quoted=!quoted;
-    }else if(c===',' && !quoted){out.push(field.trim());field='';}
-    else field+=c;
-  }
-  out.push(field.trim());
-  return out;
-}
-
-function processCSVText(text, filename){
-  const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/).filter(l=>l.trim().length);
-  if(lines.length<2){alert('No data rows found.');return;}
-  const header=splitCSVRow(lines[0]).map(h=>h.replace(/^"|"$/g,'').trim().toLowerCase());
-  const timeCol=header.findIndex(h=>h==='mcgs_time');
-  const tc=timeCol>=0?timeCol:0;
-  
-  // MCGS exports: timestamp, milliseconds, temperature PV, temperature SV, humidity PV, humidity SV.
-  const data=[]; let skipped=0;
-  for(let i=1;i<lines.length;i++){
-    const p=splitCSVRow(lines[i]);
-    if(p.length<4){skipped++;continue;}
-    const ts=parseTimestamp(p[tc]);
-    const pv=Number(p[2]),sv=Number(p[3]);
-    if(!ts || !Number.isFinite(pv) || !Number.isFinite(sv) || !p[2].trim() || !p[3].trim()){
-      skipped++;continue;
+    for (const enc of ["windows-1252","latin1","gbk","big5"]){
+      try {
+        return new TextDecoder(enc, {fatal:false}).decode(bytes);
+      } catch(e){}
     }
-    data.push({time:ts,pv,sv});
+    return new TextDecoder("utf-8").decode(bytes);
   }
-  if(!data.length){alert('No valid temperature rows found. Check CSV columns and date format.');return;}
-  data.sort((a,b)=>a.time-b.time);
-  const ranges=analyze(data);
-  renderResults(data,ranges,filename);
-  if(skipped) fileInfo.textContent+=`  •  ${skipped} skipped rows`;
-}
 
-function parseTimestamp(str){
-  if(!str)return null;
-  const m=String(str).trim().replace(/^"|"$/g,'').match(/^(\d{4}|\d{1,2})[\/-](\d{1,2})[\/-](\d{1,4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/);
-  if(!m)return null;
-  let y,mo,d;
-  if(m[1].length===4){y=+m[1];mo=+m[2];d=+m[3];}
-  else if(m[3].length===4){mo=+m[1];d=+m[2];y=+m[3];}
-  else return null;
-  const h=+m[4],mi=+m[5],sec=+(m[6]||0);
-  const dt=new Date(y,mo-1,d,h,mi,sec);
-  if(dt.getFullYear()!==y || dt.getMonth()!==mo-1 || dt.getDate()!==d || dt.getHours()!==h || dt.getMinutes()!==mi || dt.getSeconds()!==sec)return null;
-  return dt;
-}
-
-// ------------------------------------------------------------------
-// ANALYSIS
-// ------------------------------------------------------------------
-function analyze(data){
-  const n = data.length;
-  const pv = data.map(d => d.pv);
-  const sv = data.map(d => d.sv);
-
-  let testStart = null;
-  for (let i = 0; i < n - DIP_DROP_COUNT; i++){
-    let ok = true;
-    for (let k = 1; k <= DIP_DROP_COUNT; k++){
-      if (!(sv[i+k] < sv[i+k-1] - SV_DROP_MIN)){ ok = false; break; }
+  function splitCSVRow(line, delimiter = ','){
+    const out=[]; let field='', quoted=false;
+    for(let i=0;i<line.length;i++){
+      const c=line[i];
+      if(c==='"'){
+        if(quoted && line[i+1]==='"'){field+='"';i++;}
+        else quoted=!quoted;
+      }else if(c===delimiter && !quoted){out.push(field.trim());field='';}
+      else field+=c;
     }
-    if (ok){ testStart = i; break; }
+    out.push(field.trim());
+    return out;
   }
-  if (testStart === null) testStart = 0;
 
-  let neg40Reached = null;
-  for (let i = testStart; i < n; i++){
-    if (Math.abs(sv[i] - NEG40_TARGET) <= 0.1){
-      let ok = true;
-      for (let j = i; j < i + TOL_CONSECUTIVE && j < n; j++){
-        if (!(pv[j] <= sv[j] + PV_SV_TOLERANCE)){ ok = false; break; }
+  function processCSVText(text, filename){
+    const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/).filter(l=>l.trim().length);
+    if(lines.length<2){alert('No data rows found.');return;}
+    
+    const firstLine = lines[0];
+    let delimiter = ',';
+    if (firstLine.split(';').length > firstLine.split(',').length) delimiter = ';';
+    else if (firstLine.split('\t').length > firstLine.split(',').length) delimiter = '\t';
+
+    const header=splitCSVRow(lines[0], delimiter).map(h=>h.replace(/^"|"$/g,'').trim().toLowerCase());
+    const timeCol=header.findIndex(h=>h==='mcgs_time');
+    const tc=timeCol>=0?timeCol:0;
+    
+    const data=[]; let skipped=0;
+    for(let i=1;i<lines.length;i++){
+      const p=splitCSVRow(lines[i], delimiter);
+      if(p.length<4){skipped++;continue;}
+      const ts=parseTimestamp(p[tc]);
+      const pv=Number(p[2]),sv=Number(p[3]);
+      if(!ts || !Number.isFinite(pv) || !Number.isFinite(sv) || !p[2].trim() || !p[3].trim()){
+        skipped++;continue;
       }
-      if (ok){ neg40Reached = i; break; }
+      data.push({time:ts,pv,sv});
     }
+    if(!data.length){alert('No valid temperature rows found. Check CSV columns and date format.');return;}
+    data.sort((a,b)=>a.time-b.time);
+    const ranges=analyze(data);
+    renderResults(data,ranges,filename);
+    if(skipped) fileInfo.textContent+=`  •  ${skipped} skipped rows`;
   }
 
-  let riseStart = null;
-  if (neg40Reached !== null){
-    for (let i = neg40Reached + 1; i < n; i++){
-      if (sv[i] > sv[i-1] + SV_STEP){ riseStart = i; break; }
-    }
+  function parseTimestamp(str){
+    if(!str)return null;
+    const m=String(str).trim().replace(/^"|"$/g,'').match(/^(\d{4}|\d{1,2})[\/-](\d{1,2})[\/-](\d{1,4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+    if(!m)return null;
+    let y,mo,d;
+    if(m[1].length===4){y=+m[1];mo=+m[2];d=+m[3];}
+    else if(m[3].length===4){mo=+m[1];d=+m[2];y=+m[3];}
+    else return null;
+    const h=+m[4],mi=+m[5],sec=+(m[6]||0);
+    const dt=new Date(y,mo-1,d,h,mi,sec);
+    if(dt.getFullYear()!==y || dt.getMonth()!==mo-1 || dt.getDate()!==d || dt.getHours()!==h || dt.getMinutes()!==mi || dt.getSeconds()!==sec)return null;
+    return dt;
   }
 
-  let pos70Reached = null;
-  if (riseStart !== null){
-    for (let i = riseStart; i < n; i++){
-      if (Math.abs(sv[i] - POS70_TARGET) <= 0.1){
+  // ------------------------------------------------------------------
+  // ANALYSIS
+  // ------------------------------------------------------------------
+  function analyze(data){
+    const n = data.length;
+    const pv = data.map(d => d.pv);
+    const sv = data.map(d => d.sv);
+
+    let testStart = null;
+    for (let i = 0; i < n - DIP_DROP_COUNT; i++){
+      let ok = true;
+      for (let k = 1; k <= DIP_DROP_COUNT; k++){
+        if (!(sv[i+k] < sv[i+k-1] - SV_DROP_MIN)){ ok = false; break; }
+      }
+      if (ok){ testStart = i; break; }
+    }
+    if (testStart === null) testStart = 0;
+
+    let neg40Reached = null;
+    for (let i = testStart; i < n; i++){
+      if (Math.abs(sv[i] - NEG40_TARGET) <= 0.1){
         let ok = true;
         for (let j = i; j < i + TOL_CONSECUTIVE && j < n; j++){
-          if (!(pv[j] >= sv[j] - PV_SV_TOLERANCE)){ ok = false; break; }
+          if (!(pv[j] <= sv[j] + PV_SV_TOLERANCE)){ ok = false; break; }
         }
-        if (ok){ pos70Reached = i; break; }
+        if (ok){ neg40Reached = i; break; }
       }
     }
-  }
 
-  let fallStart = null;
-  if (pos70Reached !== null){
-    for (let i = pos70Reached + 1; i < n; i++){
-      if (sv[i] < sv[i-1] - SV_STEP){ fallStart = i; break; }
-    }
-  }
-
-  let pos25Reached = null;
-  if (fallStart !== null){
-    for (let i = fallStart; i < n; i++){
-      if (Math.abs(sv[i] - POS25_TARGET) <= POS25_BAND){
-        pos25Reached = i; break;
+    let riseStart = null;
+    if (neg40Reached !== null){
+      for (let i = neg40Reached + 1; i < n; i++){
+        if (sv[i] > sv[i-1] + SV_STEP){ riseStart = i; break; }
       }
     }
+
+    let pos70Reached = null;
+    if (riseStart !== null){
+      for (let i = riseStart; i < n; i++){
+        if (Math.abs(sv[i] - POS70_TARGET) <= 0.1){
+          let ok = true;
+          for (let j = i; j < i + TOL_CONSECUTIVE && j < n; j++){
+            if (!(pv[j] >= sv[j] - PV_SV_TOLERANCE)){ ok = false; break; }
+          }
+          if (ok){ pos70Reached = i; break; }
+        }
+      }
+    }
+
+    let fallStart = null;
+    if (pos70Reached !== null){
+      for (let i = pos70Reached + 1; i < n; i++){
+        if (sv[i] < sv[i-1] - SV_STEP){ fallStart = i; break; }
+      }
+    }
+
+    let pos25Reached = null;
+    if (fallStart !== null){
+      for (let i = fallStart; i < n; i++){
+        if (Math.abs(sv[i] - POS25_TARGET) <= POS25_BAND){
+          pos25Reached = i; break;
+        }
+      }
+    }
+
+    const pt = idx => idx === null ? null : {
+      idx, time: data[idx].time, pv: data[idx].pv, sv: data[idx].sv
+    };
+
+    return {
+      "-40 Dip":  [pt(testStart),   pt(neg40Reached)],
+      "-40 Soak": [pt(neg40Reached),pt(riseStart)],
+      "70 Rise":  [pt(riseStart),   pt(pos70Reached)],
+      "70 Soak":  [pt(pos70Reached),pt(fallStart)],
+      "25 Dip":   [pt(fallStart),   pt(pos25Reached)],
+    };
   }
 
-  const pt = idx => idx === null ? null : {
-    idx, time: data[idx].time, pv: data[idx].pv, sv: data[idx].sv
-  };
+  // ------------------------------------------------------------------
+  // FORMATTING HELPERS
+  // ------------------------------------------------------------------
+  function pad2(n){ return String(n).padStart(2,"0"); }
+  function fmtTime(d){
+    return `${d.getFullYear()}/${pad2(d.getMonth()+1)}/${pad2(d.getDate())}  ` +
+           `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  }
+  function fmtDuration(ms){
+    const totalMin = Math.floor(ms / 60000);
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    return `${h}:${pad2(m)}:00`;
+  }
+  function fmtHM(ms){
+    const totalMin = Math.floor(ms / 60000);
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    const hStr = `${h} hour${h!==1?"s":""}`;
+    const mStr = `${m} minute${m!==1?"s":""}`;
+    if (h === 0) return mStr;
+    if (m === 0) return hStr;
+    return `${hStr} and ${mStr}`;
+  }
+  function fmtHrs(ms){
+    return (ms / 3600000).toFixed(3);
+  }
+  function computeRate(start, end){
+    if (!start || !end) return "—";
+    const dtMin = (end.time - start.time) / 60000;
+    if (dtMin <= 0) return "—";
+    const dPV = end.pv - start.pv;
+    const rate = dPV / dtMin;
+    const sign = rate >= 0 ? "+" : "";
+    return `${sign}${rate.toFixed(2)} °C/min`;
+  }
 
-  return {
-    "-40 Dip":  [pt(testStart),   pt(neg40Reached)],
-    "-40 Soak": [pt(neg40Reached),pt(riseStart)],
-    "70 Rise":  [pt(riseStart),   pt(pos70Reached)],
-    "70 Soak":  [pt(pos70Reached),pt(fallStart)],
-    "25 Dip":   [pt(fallStart),   pt(pos25Reached)],
-  };
-}
+  // ------------------------------------------------------------------
+  // RENDER
+  // ------------------------------------------------------------------
+  function renderResults(data, ranges, filename){
+    fileInfo.textContent =
+     `📄 ${filename}  •  ${data.length} pts  •  ` +
+      `${fmtTime(data[0].time)} → ${fmtTime(data[data.length-1].time)}`;
 
-// ------------------------------------------------------------------
-// FORMATTING HELPERS
-// ------------------------------------------------------------------
-function pad2(n){ return String(n).padStart(2,"0"); }
-function fmtTime(d){
-  return `${d.getFullYear()}/${pad2(d.getMonth()+1)}/${pad2(d.getDate())}  ` +
-         `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-}
-function fmtDuration(ms){
-  const totalMin = Math.floor(ms / 60000);
-  const h = Math.floor(totalMin / 60);
-  const m = totalMin % 60;
-  return `${h}:${pad2(m)}:00`;
-}
-function fmtHM(ms){
-  const totalMin = Math.floor(ms / 60000);
-  const h = Math.floor(totalMin / 60);
-  const m = totalMin % 60;
-  const hStr = `${h} hour${h!==1?"s":""}`;
-  const mStr = `${m} minute${m!==1?"s":""}`;
-  if (h === 0) return mStr;
-  if (m === 0) return hStr;
-  return `${hStr} and ${mStr}`;
-}
-function fmtHrs(ms){
-  return (ms / 3600000).toFixed(3);
-}
-function computeRate(start, end){
-  if (!start || !end) return "—";
-  const dtMin = (end.time - start.time) / 60000;
-  if (dtMin <= 0) return "—";
-  const dPV = end.pv - start.pv;
-  const rate = dPV / dtMin;
-  const sign = rate >= 0 ? "+" : "";
-  return `${sign}${rate.toFixed(2)} °C/min`;
-}
+    const reportLines = [];
 
-// ------------------------------------------------------------------
-// RENDER
-// ------------------------------------------------------------------
-function renderResults(data, ranges, filename){
-  fileInfo.textContent =
-   `📄 ${filename}  •  ${data.length} pts  •  ` +
-    `${fmtTime(data[0].time)} → ${fmtTime(data[data.length-1].time)}`;
+    RANGE_ORDER.forEach(name => {
+      const [start, end] = ranges[name];
+      const card = document.getElementById("card-" + cssId(name));
+      card.classList.remove("ok","fail");
+      const startEl = card.querySelector(".start");
+      const endEl = card.querySelector(".end");
+      const statusEl = card.querySelector(".status");
+      const durEl = card.querySelector(".dur");
+      const rateWrap = card.querySelector(".rate-wrap");
+      const rateEl = card.querySelector(".rate");
 
-  const reportLines = [];
+      if (start && end){
+        card.classList.add("ok");
+        startEl.textContent = fmtTime(start.time);
+        endEl.textContent   = fmtTime(end.time);
+        statusEl.textContent = "✓";
+        statusEl.className = "status ok";
+        durEl.textContent = fmtDuration(end.time - start.time);
 
-  RANGE_ORDER.forEach(name => {
-    const [start, end] = ranges[name];
-    const card = document.getElementById("card-" + cssId(name));
-    card.classList.remove("ok","fail");
-    const startEl = card.querySelector(".start");
-    const endEl = card.querySelector(".end");
-    const statusEl = card.querySelector(".status");
-    const durEl = card.querySelector(".dur");
-    const rateWrap = card.querySelector(".rate-wrap");
-    const rateEl = card.querySelector(".rate");
+        let line = `${name.padEnd(10)}(start = ${fmtTime(start.time)} | end = ${fmtTime(end.time)}) [${fmtDuration(end.time-start.time)}];`;
 
-    if (start && end){
-      card.classList.add("ok");
-      startEl.textContent = fmtTime(start.time);
-      endEl.textContent   = fmtTime(end.time);
-      statusEl.textContent = "✓";
-      statusEl.className = "status ok";
-      durEl.textContent = fmtDuration(end.time - start.time);
-
-      let line = `${name.padEnd(10)}(start = ${fmtTime(start.time)} | end = ${fmtTime(end.time)}) [${fmtDuration(end.time-start.time)}];`;
-
-      if (RATE_STATES.has(name)){
-        const r = computeRate(start, end);
-        rateEl.textContent = r;
-        rateWrap.style.display = "";
-        line += `  rate = ${r};`;
+        if (RATE_STATES.has(name)){
+          const r = computeRate(start, end);
+          rateEl.textContent = r;
+          rateWrap.style.display = "";
+          line += `  rate = ${r};`;
+        } else {
+          rateWrap.style.display = "none";
+        }
+        reportLines.push(line);
       } else {
+        card.classList.add("fail");
+        startEl.textContent = "—";
+        endEl.textContent   = "—";
+        statusEl.textContent = "✗";
+        statusEl.className = "status fail";
+        durEl.textContent = "—";
         rateWrap.style.display = "none";
+        reportLines.push(`${name.padEnd(10)}NOT FOUND`);
       }
-      reportLines.push(line);
-    } else {
-      card.classList.add("fail");
-      startEl.textContent = "—";
-      endEl.textContent   = "—";
-      statusEl.textContent = "✗";
-      statusEl.className = "status fail";
-      durEl.textContent = "—";
-      rateWrap.style.display = "none";
-      reportLines.push(`${name.padEnd(10)}NOT FOUND`);
-    }
-  });
+    });
 
-  const startPt = ranges["-40 Dip"][0];
-  const endPt   = ranges["25 Dip"][1];
-  runtimeCard.style.display = "";
-  let runtimeLine;
-  if (startPt && endPt){
-    const td = endPt.time - startPt.time;
-    runtimeHM.textContent  = fmtHM(td);
-    runtimeHrs.textContent = `Decimal hours: ${fmtHrs(td)} h`;
-    runtimeLine = `Total runtime: ${fmtHM(td)} (${fmtHrs(td)} h)`;
-  } else {
-    runtimeHM.textContent  = "—";
-    runtimeHrs.textContent = "Decimal hours: —";
-    runtimeLine = "Total runtime: NOT AVAILABLE";
+    const startPt = ranges["-40 Dip"][0];
+    const endPt   = ranges["25 Dip"][1];
+    runtimeCard.style.display = "";
+    let runtimeLine;
+    if (startPt && endPt){
+      const td = endPt.time - startPt.time;
+      runtimeHM.textContent  = fmtHM(td);
+      runtimeHrs.textContent = `Decimal hours: ${fmtHrs(td)} h`;
+      runtimeLine = `Total runtime: ${fmtHM(td)} (${fmtHrs(td)} h)`;
+    } else {
+      runtimeHM.textContent  = "—";
+      runtimeHrs.textContent = "Decimal hours: —";
+      runtimeLine = "Total runtime: NOT AVAILABLE";
+    }
+
+    const header = [
+      "TEST ANALYSIS REPORT",
+      "=".repeat(60),
+      `File         : ${filename}`,
+      `Total points : ${data.length}`,
+      `First row    : ${fmtTime(data[0].time)}`,
+      `Last row     : ${fmtTime(data[data.length-1].time)}`,
+      "",
+      "RANGES",
+      "-".repeat(60),
+    ];
+    lastReport = [...header, ...reportLines, "", "-".repeat(60), runtimeLine].join("\n");
+
+    // 1. Inject HTML layout into the empty container
+    chartContainer.innerHTML = `
+      <div class="chart-wrap" id="chartWrap">
+        <canvas id="tempChart"></canvas>
+        <div class="zoom-hint">🖱️ Scroll to zoom · Drag to pan · Double-click to reset</div>
+      </div>
+    `;
+
+    // 2. Unhide it
+    document.getElementById("chartWrap").style.display = "block";
+
+    // 3. Let the browser lay out the box, then build the chart
+    setTimeout(() => {
+      try {
+        buildChart(data, ranges);
+      } catch (err) {
+        alert("Chart drawing error: " + err.message);
+      }
+    }, 50);
+
+    btnCopy.disabled = false;
+    btnSave.disabled = false;
+    btnClear.disabled = false;
+    btnZoomReset.disabled = false;
   }
 
-  const header = [
-    "TEST ANALYSIS REPORT",
-    "=".repeat(60),
-    `File         : ${filename}`,
-    `Total points : ${data.length}`,
-    `First row    : ${fmtTime(data[0].time)}`,
-    `Last row     : ${fmtTime(data[data.length-1].time)}`,
-    "",
-    "RANGES",
-    "-".repeat(60),
-  ];
-  lastReport = [...header, ...reportLines, "", "-".repeat(60), runtimeLine].join("\n");
+  // ------------------------------------------------------------------
+  // CHART & CUSTOM NATIVE ZOOM LOGIC
+  // ------------------------------------------------------------------
+  function buildChart(data, ranges){
+    const ctx = document.getElementById("tempChart").getContext("2d");
+    totalDataPoints = data.length;
 
-  buildChart(data, ranges);
+    const labels = data.map(d =>
+      `${pad2(d.time.getHours())}:${pad2(d.time.getMinutes())}`
+    );
+    const pvData = data.map(d => d.pv);
+    const svData = data.map(d => d.sv);
 
-  btnCopy.disabled = false;
-  btnSave.disabled = false;
-  btnClear.disabled = false;
-  btnZoomReset.disabled = false;
-}
+    const idxOf = pt => pt ? pt.idx : null;
 
-// ------------------------------------------------------------------
-// CHART (with zoom & pan)
-// ------------------------------------------------------------------
-function buildChart(data, ranges){
-  const ctx = document.getElementById("tempChart").getContext("2d");
-  chartWrap.style.display = "";
+    const boundaries = {
+      "-40 Dip":  { start: idxOf(ranges["-40 Dip"][0]),  end: idxOf(ranges["-40 Dip"][1])  },
+      "-40 Soak": { start: idxOf(ranges["-40 Soak"][0]), end: idxOf(ranges["-40 Soak"][1]) },
+      "70 Rise":  { start: idxOf(ranges["70 Rise"][0]),  end: idxOf(ranges["70 Rise"][1])  },
+      "70 Soak":  { start: idxOf(ranges["70 Soak"][0]),  end: idxOf(ranges["70 Soak"][1])  },
+      "25 Dip":   { start: idxOf(ranges["25 Dip"][0]),   end: idxOf(ranges["25 Dip"][1])   },
+    };
 
-  const labels = data.map(d =>
-    `${pad2(d.time.getHours())}:${pad2(d.time.getMinutes())}`
-  );
-  const pvData = data.map(d => d.pv);
-  const svData = data.map(d => d.sv);
+    const phaseColors = {
+      "-40 Dip":  "rgba(56,189,248,0.08)",
+      "-40 Soak": "rgba(34,197,94,0.08)",
+      "70 Rise":  "rgba(245,158,11,0.08)",
+      "70 Soak":  "rgba(239,68,68,0.08)",
+      "25 Dip":   "rgba(167,139,250,0.08)",
+    };
 
-  const idxOf = pt => pt ? pt.idx : null;
+    const annotations = {};
 
-  const boundaries = {
-    "-40 Dip":  { start: idxOf(ranges["-40 Dip"][0]),  end: idxOf(ranges["-40 Dip"][1])  },
-    "-40 Soak": { start: idxOf(ranges["-40 Soak"][0]), end: idxOf(ranges["-40 Soak"][1]) },
-    "70 Rise":  { start: idxOf(ranges["70 Rise"][0]),  end: idxOf(ranges["70 Rise"][1])  },
-    "70 Soak":  { start: idxOf(ranges["70 Soak"][0]),  end: idxOf(ranges["70 Soak"][1])  },
-    "25 Dip":   { start: idxOf(ranges["25 Dip"][0]),   end: idxOf(ranges["25 Dip"][1])   },
-  };
+    Object.entries(boundaries).forEach(([name, {start, end}]) => {
+      if (start !== null && end !== null && end > start){
+        annotations["band_" + name] = {
+          type: "box",
+          xMin: start, xMax: end,
+          backgroundColor: phaseColors[name],
+          borderWidth: 0,
+          drawTime: "beforeDatasetsDraw",
+        };
+      }
+    });
 
-  const phaseColors = {
-    "-40 Dip":  "rgba(56,189,248,0.08)",
-    "-40 Soak": "rgba(34,197,94,0.08)",
-    "70 Rise":  "rgba(245,158,11,0.08)",
-    "70 Soak":  "rgba(239,68,68,0.08)",
-    "25 Dip":   "rgba(167,139,250,0.08)",
-  };
+    const boundaryPoints = [
+      { idx: boundaries["-40 Dip"].start,  label: "-40 start" },
+      { idx: boundaries["-40 Dip"].end,    label: "-40 reached" },
+      { idx: boundaries["-40 Soak"].end,   label: "Rise" },
+      { idx: boundaries["70 Rise"].end,    label: "+70 reached" },
+      { idx: boundaries["70 Soak"].end,    label: "Fall" },
+      { idx: boundaries["25 Dip"].end,     label: "25 reached" },
+    ];
 
-  const annotations = {};
-
-  Object.entries(boundaries).forEach(([name, {start, end}]) => {
-    if (start !== null && end !== null && end > start){
-      annotations["band_" + name] = {
-        type: "box",
-        xMin: start, xMax: end,
-        backgroundColor: phaseColors[name],
-        borderWidth: 0,
-        drawTime: "beforeDatasetsDraw",
+    boundaryPoints.forEach((b, i) => {
+      if (b.idx === null || b.idx === undefined) return;
+      annotations["line" + i] = {
+        type: "line",
+        xMin: b.idx, xMax: b.idx,
+        borderColor: "rgba(148,163,184,0.55)",
+        borderWidth: 1,
+        borderDash: [4, 4],
       };
+      annotations["label" + i] = {
+        type: "label",
+        xValue: b.idx,
+        yValue: "max",
+        content: [b.label],
+        color: "#94a3b8",
+        font: { size: 9, weight: "600" },
+        position: "start",
+        yAdjust: 4,
+        xAdjust: 4,
+      };
+    });
+
+    if (tempChart){ tempChart.destroy(); tempChart = null; }
+
+    // Reset bounds
+    minIndex = 0;
+    maxIndex = data.length - 1;
+
+    tempChart = new Chart(ctx, {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          {
+            label: "PV (°C)",
+            data: pvData,
+            borderColor: "#38bdf8",
+            backgroundColor: "rgba(56,189,248,0.12)",
+            borderWidth: 1.6,
+            pointRadius: 0,
+            tension: 0.2,
+            fill: true,
+          },
+          {
+            label: "SV (°C)",
+            data: svData,
+            borderColor: "#f59e0b",
+            backgroundColor: "transparent",
+            borderWidth: 1.6,
+            borderDash: [6, 4],
+            pointRadius: 0,
+            tension: 0.2,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 0 }, // Disable animation to make zooming instant
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: {
+            labels: { color: "#e2e8f0", font: { size: 11 }, boxWidth: 12, boxHeight: 12 },
+          },
+          tooltip: {
+            backgroundColor: "#0f172a",
+            borderColor: "#334155",
+            borderWidth: 1,
+            titleColor: "#e2e8f0",
+            bodyColor: "#e2e8f0",
+            callbacks: {
+              label: c => `${c.dataset.label}: ${c.parsed.y.toFixed(2)} °C`,
+            },
+          },
+          annotation: { annotations }
+        },
+        scales: {
+          x: {
+            min: 0,
+            max: data.length - 1,
+            ticks: {
+              color: "#94a3b8",
+              font: { size: 9 },
+              maxRotation: 0,
+              autoSkip: true,
+              maxTicksLimit: 12,
+            },
+            grid: { color: "rgba(51,65,85,0.4)" },
+          },
+          y: {
+            ticks: {
+              color: "#94a3b8",
+              font: { size: 10 },
+              callback: v => v + " °C",
+            },
+            grid: { color: "rgba(51,65,85,0.4)" },
+          },
+        },
+      }
+    });
+
+    attachCustomZoomEvents(ctx.canvas);
+  }
+
+  // ------------------------------------------------------------------
+  // CUSTOM ZOOM & PAN ENGINE (No Plugins Required)
+  // ------------------------------------------------------------------
+  function attachCustomZoomEvents(canvas) {
+    let isDragging = false;
+    let startX = 0;
+    let startMin = 0;
+    let startMax = 0;
+
+    // 1. SCROLL TO ZOOM
+    canvas.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      if (!tempChart) return;
+
+      const zoomFactor = 0.15;
+      const range = maxIndex - minIndex;
+      const delta = range * zoomFactor;
+
+      if (e.deltaY < 0) {
+        // Zoom in
+        if (range > 10) {
+          minIndex += delta / 2;
+          maxIndex -= delta / 2;
+        }
+      } else {
+        // Zoom out
+        minIndex -= delta / 2;
+        maxIndex += delta / 2;
+      }
+
+      // Clamp bounds
+      if (minIndex < 0) minIndex = 0;
+      if (maxIndex > totalDataPoints - 1) maxIndex = totalDataPoints - 1;
+
+      applyZoom();
+    });
+
+    // 2. CLICK & DRAG TO PAN
+    canvas.addEventListener("mousedown", (e) => {
+      isDragging = true;
+      startX = e.clientX;
+      startMin = minIndex;
+      startMax = maxIndex;
+      canvas.style.cursor = "grabbing";
+    });
+
+    window.addEventListener("mousemove", (e) => {
+      if (!isDragging || !tempChart) return;
+      
+      const deltaX = e.clientX - startX;
+      const chartWidth = canvas.getBoundingClientRect().width;
+      const pixelsPerIndex = chartWidth / (startMax - startMin);
+      
+      const indexShift = -(deltaX / pixelsPerIndex);
+      
+      let newMin = startMin + indexShift;
+      let newMax = startMax + indexShift;
+
+      // Prevent panning out of bounds
+      if (newMin >= 0 && newMax <= totalDataPoints - 1) {
+        minIndex = newMin;
+        maxIndex = newMax;
+        applyZoom();
+      }
+    });
+
+    window.addEventListener("mouseup", () => {
+      isDragging = false;
+      canvas.style.cursor = "crosshair";
+    });
+
+    // 3. DOUBLE CLICK TO RESET
+    canvas.addEventListener("dblclick", () => {
+      if (!tempChart) return;
+      minIndex = 0;
+      maxIndex = totalDataPoints - 1;
+      applyZoom();
+    });
+
+    canvas.style.cursor = "crosshair";
+
+    function applyZoom() {
+      if (tempChart) {
+        tempChart.options.scales.x.min = Math.max(0, Math.round(minIndex));
+        tempChart.options.scales.x.max = Math.min(totalDataPoints - 1, Math.round(maxIndex));
+        tempChart.update('none'); // Instant update
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // TOOLBAR
+  // ------------------------------------------------------------------
+  btnCopy.addEventListener("click", () => {
+    navigator.clipboard.writeText(lastReport).then(
+      () => alert("Report copied to clipboard."),
+      () => alert("Copy failed — try manually selecting text.")
+    );
+  });
+
+  btnSave.addEventListener("click", () => {
+    const blob = new Blob([lastReport], {type:"text/plain;charset=utf-8"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "test_report.txt";
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  btnZoomReset.addEventListener("click", () => {
+    if (tempChart) {
+      minIndex = 0;
+      maxIndex = totalDataPoints - 1;
+      tempChart.options.scales.x.min = 0;
+      tempChart.options.scales.x.max = totalDataPoints - 1;
+      tempChart.update();
     }
   });
 
-  const boundaryPoints = [
-    { idx: boundaries["-40 Dip"].start,  label: "-40 start" },
-    { idx: boundaries["-40 Dip"].end,    label: "-40 reached" },
-    { idx: boundaries["-40 Soak"].end,   label: "Rise" },
-    { idx: boundaries["70 Rise"].end,    label: "+70 reached" },
-    { idx: boundaries["70 Soak"].end,    label: "Fall" },
-    { idx: boundaries["25 Dip"].end,     label: "25 reached" },
-  ];
-
-  boundaryPoints.forEach((b, i) => {
-    if (b.idx === null || b.idx === undefined) return;
-    annotations["line" + i] = {
-      type: "line",
-      xMin: b.idx, xMax: b.idx,
-      borderColor: "rgba(148,163,184,0.55)",
-      borderWidth: 1,
-      borderDash: [4, 4],
-    };
-    annotations["label" + i] = {
-      type: "label",
-      xValue: b.idx,
-      yValue: "max",
-      content: [b.label],
-      color: "#94a3b8",
-      font: { size: 9, weight: "600" },
-      position: "start",
-      yAdjust: 4,
-      xAdjust: 4,
-    };
+  btnClear.addEventListener("click", () => {
+    lastReport = "";
+    fileInfo.textContent = "No file loaded";
+    buildCards();
+    chartContainer.innerHTML = "";
+    if (tempChart){ tempChart.destroy(); tempChart = null; }
+    runtimeCard.style.display = "none";
+    btnCopy.disabled = true;
+    btnSave.disabled = true;
+    btnClear.disabled = true;
+    btnZoomReset.disabled = true;
+    fileInput.value = "";
   });
 
-  if (tempChart){ tempChart.destroy(); tempChart = null; }
-
-  tempChart = new Chart(ctx, {
-    type: "line",
-    data: {
-      labels,
-      datasets: [
-        {
-          label: "PV (°C)",
-          data: pvData,
-          borderColor: "#38bdf8",
-          backgroundColor: "rgba(56,189,248,0.12)",
-          borderWidth: 1.6,
-          pointRadius: 0,
-          tension: 0.2,
-          fill: true,
-        },
-        {
-          label: "SV (°C)",
-          data: svData,
-          borderColor: "#f59e0b",
-          backgroundColor: "transparent",
-          borderWidth: 1.6,
-          borderDash: [6, 4],
-          pointRadius: 0,
-          tension: 0.2,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: { duration: 400 },
-      interaction: { mode: "index", intersect: false },
-      plugins: {
-        legend: {
-          labels: {
-            color: "#e2e8f0",
-            font: { size: 11 },
-            boxWidth: 12,
-            boxHeight: 12,
-          },
-        },
-        tooltip: {
-          backgroundColor: "#0f172a",
-          borderColor: "#334155",
-          borderWidth: 1,
-          titleColor: "#e2e8f0",
-          bodyColor: "#e2e8f0",
-          callbacks: {
-            label: c => `${c.dataset.label}: ${c.parsed.y.toFixed(2)} °C`,
-          },
-        },
-        annotation: { annotations },
-        zoom: {
-          pan: {
-            enabled: true,
-            mode: "x",
-            modifierKey: null,
-          },
-          zoom: {
-            wheel: {
-              enabled: true,
-              speed: 0.1,
-            },
-            pinch: {
-              enabled: true,
-            },
-            drag: {
-              enabled: true,
-              backgroundColor: "rgba(56,189,248,0.15)",
-              borderColor: "rgba(56,189,248,0.5)",
-              borderWidth: 1,
-            },
-            mode: "x",
-          },
-          limits: {
-            x: { min: 0, max: data.length - 1, minRange: 10 },
-            y: { min: -60, max: 90, minRange: 10 },
-          },
-        },
-      },
-      scales: {
-        x: {
-          ticks: {
-            color: "#94a3b8",
-            font: { size: 9 },
-            maxRotation: 0,
-            autoSkip: true,
-            maxTicksLimit: 12,
-          },
-          grid: { color: "rgba(51,65,85,0.4)" },
-        },
-        y: {
-          ticks: {
-            color: "#94a3b8",
-            font: { size: 10 },
-            callback: v => v + " °C",
-          },
-          grid: { color: "rgba(51,65,85,0.4)" },
-        },
-      },
-    },
-    plugins: [
-      window["chartjs-plugin-annotation"],
-      window["chartjs-plugin-zoom"],
-    ],
-  });
+} catch (e) {
+  alert("Initialization Error: " + e.message);
 }
-
-// ------------------------------------------------------------------
-// TOOLBAR
-// ------------------------------------------------------------------
-btnCopy.addEventListener("click", () => {
-  navigator.clipboard.writeText(lastReport).then(
-    () => alert("Report copied to clipboard."),
-    () => alert("Copy failed — try manually selecting text.")
-  );
-});
-
-btnSave.addEventListener("click", () => {
-  const blob = new Blob([lastReport], {type:"text/plain;charset=utf-8"});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "test_report.txt";
-  a.click();
-  URL.revokeObjectURL(url);
-});
-
-btnZoomReset.addEventListener("click", () => {
-  if (tempChart) tempChart.resetZoom();
-});
-
-btnClear.addEventListener("click", () => {
-  lastReport = "";
-  fileInfo.textContent = "No file loaded";
-  buildCards();
-  chartWrap.style.display = "none";
-  if (tempChart){ tempChart.destroy(); tempChart = null; }
-  runtimeCard.style.display = "none";
-  btnCopy.disabled = true;
-  btnSave.disabled = true;
-  btnClear.disabled = true;
-  btnZoomReset.disabled = true;
-  fileInput.value = "";
-});
 </script>
 </body>
 </html>
