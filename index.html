@@ -172,11 +172,11 @@
 
   <header>
     <h1>Temperature Test Analyzer</h1>
-    <p>Drop a CSV file to analyze the thermal test phases</p>
+    <p>Load either Radwin CSV format to analyze the thermal test phases</p>
   </header>
 
   <div class="dropzone" id="dropzone">
-    ⬇&nbsp;&nbsp; Drag &amp; Drop your CSV here &nbsp;·&nbsp; or click to browse
+    ⬇   Drag & Drop your CSV here  ·  or click to browse
   </div>
   <input type="file" id="fileInput" accept=".csv">
 
@@ -332,35 +332,55 @@ function decodeBytes(bytes){
 // ------------------------------------------------------------------
 // CSV PARSING
 // ------------------------------------------------------------------
-function processCSVText(text, filename){
-  const lines = text.split(/\r?\n/).filter(l => l.trim().length);
-  if (lines.length < 2){
-    alert("No data rows found.");
-    return;
+function splitCSVRow(line){
+  const out=[]; let field='', quoted=false;
+  for(let i=0;i<line.length;i++){
+    const c=line[i];
+    if(c==='"'){
+      if(quoted && line[i+1]==='"'){field+='"';i++;}
+      else quoted=!quoted;
+    }else if(c===',' && !quoted){out.push(field.trim());field='';}
+    else field+=c;
   }
-  const data = [];
-  for (let i = 1; i < lines.length; i++){
-    const parts = lines[i].split(",");
-    if (parts.length < 4) continue;
-    const ts = parseTimestamp(parts[0].trim());
-    const pv = parseFloat(parts[2]);
-    const sv = parseFloat(parts[3]);
-    if (!ts || isNaN(pv) || isNaN(sv)) continue;
-    data.push({time: ts, pv, sv});
-  }
-  if (!data.length){
-    alert("No valid data rows found.");
-    return;
-  }
-  const ranges = analyze(data);
-  renderResults(data, ranges, filename);
+  out.push(field.trim());
+  return out;
 }
-
+function processCSVText(text, filename){
+  const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/).filter(l=>l.trim().length);
+  if(lines.length<2){alert('No data rows found.');return;}
+  const header=splitCSVRow(lines[0]).map(h=>h.replace(/^"|"$/g,'').trim().toLowerCase());
+  const timeCol=header.findIndex(h=>h==='mcgs_time');
+  const tc=timeCol>=0?timeCol:0;
+  // MCGS exports: timestamp, milliseconds, temperature PV, temperature SV, humidity PV, humidity SV.
+  const data=[]; let skipped=0;
+  for(let i=1;i<lines.length;i++){
+    const p=splitCSVRow(lines[i]);
+    if(p.length<4){skipped++;continue;}
+    const ts=parseTimestamp(p[tc]);
+    const pv=Number(p[2]),sv=Number(p[3]);
+    if(!ts || !Number.isFinite(pv) || !Number.isFinite(sv) || !p[2].trim() || !p[3].trim()){
+      skipped++;continue;
+    }
+    data.push({time:ts,pv,sv});
+  }
+  if(!data.length){alert('No valid temperature rows found. Check CSV columns and date format.');return;}
+  data.sort((a,b)=>a.time-b.time);
+  const ranges=analyze(data);
+  renderResults(data,ranges,filename);
+  if(skipped) fileInfo.textContent+=`  •  ${skipped} skipped rows`;
+}
 function parseTimestamp(str){
-  const m = str.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2}):(\d{2})$/);
-  if (!m) return null;
-  const [_, y, mo, d, h, mi, s] = m;
-  return new Date(+y, +mo - 1, +d, +h, +mi, +s);
+  if(!str)return null;
+  const m=String(str).trim().replace(/^"|"$/g,'').match(/^(\d{4}|\d{1,2})[\/-](\d{1,2})[\/-](\d{1,4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if(!m)return null;
+  let y,mo,d;
+  if(m[1].length===4){y=+m[1];mo=+m[2];d=+m[3];}
+  else if(m[3].length===4){mo=+m[1];d=+m[2];y=+m[3];}
+  else return null;
+  const h=+m[4],mi=+m[5],sec=+(m[6]||0);
+  const dt=new Date(y,mo-1,d,h,mi,sec);
+  if(dt.getFullYear()!==y || dt.getMonth()!==mo-1 || dt.getDate()!==d || dt.getHours()!==h || dt.getMinutes()!==mi || dt.getSeconds()!==sec)return null;
+  return dt;
 }
 
 // ------------------------------------------------------------------
@@ -446,24 +466,24 @@ function analyze(data){
 // ------------------------------------------------------------------
 function pad2(n){ return String(n).padStart(2,"0"); }
 function fmtTime(d){
-  return `${d.getFullYear()}/${pad2(d.getMonth()+1)}/${pad2(d.getDate())} ` +
-         `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  return ${d.getFullYear()}/${pad2(d.getMonth()+1)}/${pad2(d.getDate())}  +
+         ${pad2(d.getHours())}:${pad2(d.getMinutes())};
 }
 function fmtDuration(ms){
   const totalMin = Math.floor(ms / 60000);
   const h = Math.floor(totalMin / 60);
   const m = totalMin % 60;
-  return `${h}:${pad2(m)}:00`;
+  return ${h}:${pad2(m)}:00;
 }
 function fmtHM(ms){
   const totalMin = Math.floor(ms / 60000);
   const h = Math.floor(totalMin / 60);
   const m = totalMin % 60;
-  const hStr = `${h} hour${h!==1?"s":""}`;
-  const mStr = `${m} minute${m!==1?"s":""}`;
+  const hStr = ${h} hour${h!==1?"s":""};
+  const mStr = ${m} minute${m!==1?"s":""};
   if (h === 0) return mStr;
   if (m === 0) return hStr;
-  return `${hStr} and ${mStr}`;
+  return ${hStr} and ${mStr};
 }
 function fmtHrs(ms){
   return (ms / 3600000).toFixed(3);
@@ -475,7 +495,7 @@ function computeRate(start, end){
   const dPV = end.pv - start.pv;
   const rate = dPV / dtMin;
   const sign = rate >= 0 ? "+" : "";
-  return `${sign}${rate.toFixed(2)} °C/min`;
+  return ${sign}${rate.toFixed(2)} °C/min;
 }
 
 // ------------------------------------------------------------------
@@ -483,14 +503,15 @@ function computeRate(start, end){
 // ------------------------------------------------------------------
 function renderResults(data, ranges, filename){
   fileInfo.textContent =
-    `📄 ${filename}  •  ${data.length} pts  •  ` +
-    `${fmtTime(data[0].time)} → ${fmtTime(data[data.length-1].time)}`;
+   📄 ${filename}  •  ${data.length} pts  •  ` +
+    ${fmtTime(data[0].time)} → ${fmtTime(data[data.length-1].time)};
 
   const reportLines = [];
 
   RANGE_ORDER.forEach(name => {
     const [start, end] = ranges[name];
     const card = document.getElementById("card-" + cssId(name));
+    card.classList.remove("ok","fail");
     const startEl = card.querySelector(".start");
     const endEl = card.querySelector(".end");
     const statusEl = card.querySelector(".status");
@@ -506,13 +527,13 @@ function renderResults(data, ranges, filename){
       statusEl.className = "status ok";
       durEl.textContent = fmtDuration(end.time - start.time);
 
-      let line = `${name.padEnd(10)}(start = ${fmtTime(start.time)}  |  end = ${fmtTime(end.time)})  [${fmtDuration(end.time-start.time)}]`;
+      let line = ${name.padEnd(10)}(start = ${fmtTime(start.time)} | end = ${fmtTime(end.time)}) [${fmtDuration(end.time-start.time)}];
 
       if (RATE_STATES.has(name)){
         const r = computeRate(start, end);
         rateEl.textContent = r;
         rateWrap.style.display = "";
-        line += `  rate = ${r}`;
+        line +=   rate = ${r};
       } else {
         rateWrap.style.display = "none";
       }
@@ -525,7 +546,7 @@ function renderResults(data, ranges, filename){
       statusEl.className = "status fail";
       durEl.textContent = "—";
       rateWrap.style.display = "none";
-      reportLines.push(`${name.padEnd(10)}NOT FOUND`);
+      reportLines.push(${name.padEnd(10)}NOT FOUND);
     }
   });
 
@@ -536,8 +557,8 @@ function renderResults(data, ranges, filename){
   if (startPt && endPt){
     const td = endPt.time - startPt.time;
     runtimeHM.textContent  = fmtHM(td);
-    runtimeHrs.textContent = `Decimal hours: ${fmtHrs(td)} h`;
-    runtimeLine = `Total runtime: ${fmtHM(td)} (${fmtHrs(td)} h)`;
+    runtimeHrs.textContent = Decimal hours: ${fmtHrs(td)} h;
+    runtimeLine = Total runtime: ${fmtHM(td)} (${fmtHrs(td)} h);
   } else {
     runtimeHM.textContent  = "—";
     runtimeHrs.textContent = "Decimal hours: —";
@@ -547,10 +568,10 @@ function renderResults(data, ranges, filename){
   const header = [
     "TEST ANALYSIS REPORT",
     "=".repeat(60),
-    `File         : ${filename}`,
-    `Total points : ${data.length}`,
-    `First row    : ${fmtTime(data[0].time)}`,
-    `Last row     : ${fmtTime(data[data.length-1].time)}`,
+    File         : ${filename},
+    Total points : ${data.length},
+    First row    : ${fmtTime(data[0].time)},
+    Last row     : ${fmtTime(data[data.length-1].time)},
     "",
     "RANGES",
     "-".repeat(60),
@@ -572,7 +593,7 @@ function buildChart(data, ranges){
   chartWrap.style.display = "";
 
   const labels = data.map(d =>
-    `${pad2(d.time.getHours())}:${pad2(d.time.getMinutes())}`
+    ${pad2(d.time.getHours())}:${pad2(d.time.getMinutes())}
   );
   const pvData = data.map(d => d.pv);
   const svData = data.map(d => d.sv);
@@ -690,7 +711,7 @@ function buildChart(data, ranges){
           titleColor: "#e2e8f0",
           bodyColor: "#e2e8f0",
           callbacks: {
-            label: c => `${c.dataset.label}: ${c.parsed.y.toFixed(2)} °C`,
+            label: c => ${c.dataset.label}: ${c.parsed.y.toFixed(2)} °C,
           },
         },
         annotation: { annotations },
