@@ -44,5 +44,3 @@ This tool provides a fast, dependency-free way to visualize and extract key timi
 - **Dynamic DOM Injection**: To prevent the chart from crashing due to `0px` height when hidden, the chart container is injected into the DOM only after a file is successfully parsed. A `50ms` timeout allows the browser to calculate the container's physical dimensions before rendering.
 - **Image Export Fallback**: To ensure the exported PNG is always readable regardless of the current theme, the export function temporarily forces the chart to light-mode colors (dark text) and draws it to an off-screen canvas before downloading.
 
-### 📄 License
-Internal / Proprietary (or update with your preferred license).
